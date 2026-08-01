@@ -90,3 +90,20 @@ def test_no_autostart_removes_plist(tmp_path):
     run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
         "--no-directive-block", "--no-autostart")
     assert not (tmp_path / "Library/LaunchAgents/com.folder-bot.b.plist").exists()
+
+
+def test_directive_block_nondestructive(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    original = "# 기존 내용\n\n소중한 규칙.\n"
+    (folder / "CLAUDE.md").write_text(original)
+    (folder / "SESSION.md").write_text("세션 기록\n")
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart")
+    text = (folder / "CLAUDE.md").read_text()
+    assert original in text and "<!-- store:discord-bot:start -->" in text
+    assert (folder / "SESSION.md").read_text() == "세션 기록\n"  # SESSION.md 무접촉
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart")
+    assert text == (folder / "CLAUDE.md").read_text()            # 멱등
+    run(tmp_path, "remove", "--name", "b", "--keep-state")
+    assert (folder / "CLAUDE.md").read_text() == original        # 블록 외 diff 0

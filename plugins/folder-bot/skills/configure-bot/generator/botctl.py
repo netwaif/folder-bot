@@ -114,11 +114,43 @@ def write_plist(bot: dict) -> list[str]:
     return []
 
 
+MARK_START = "<!-- store:discord-bot:start -->"
+MARK_END = "<!-- store:discord-bot:end -->"
+
+
+def install_block(folder: Path) -> list[str]:
+    """CLAUDE.md에 지침 블록을 마커로 append(멱등). SESSION.md는 건드리지 않는다."""
+    md = folder / "CLAUDE.md"
+    body = (ASSETS / "directive-block.md").read_text()
+    cur = md.read_text() if md.exists() else ""
+    if MARK_START in cur:
+        return []
+    block = f"\n{MARK_START}\n{body.rstrip()}\n{MARK_END}\n"
+    md.write_text(cur + block)
+    return [f"CLAUDE.md 지침 블록 설치: {md}"]
+
+
+def remove_block(folder: Path) -> list[str]:
+    """마커 범위만 걷어내 원문을 복원한다(블록 외 diff 0)."""
+    md = folder / "CLAUDE.md"
+    if not md.exists():
+        return []
+    cur = md.read_text()
+    if MARK_START not in cur or MARK_END not in cur:
+        return []
+    pre, rest = cur.split(MARK_START, 1)
+    _, post = rest.split(MARK_END, 1)
+    md.write_text(pre.rstrip("\n") + ("\n" if pre.strip() else "") + post.lstrip("\n"))
+    return [f"CLAUDE.md 지침 블록 제거: {md}"]
+
+
 def install_all(bot: dict) -> list[str]:
     """add 후 설치 일괄 수행 — 스크립트·plist·지침 블록."""
     lines = []
     lines += install_scripts()
     lines += write_plist(bot)
+    if bot["directive_block"]:
+        lines += install_block(Path(bot["folder"]))
     return lines
 
 
@@ -148,10 +180,20 @@ def cmd_list(a) -> None:
 
 def cmd_remove(a) -> None:
     bots = load_bots()
-    if a.name in bots:
-        del bots[a.name]
-        save_bots(bots)
-    print(f"제거됨: {a.name}")
+    if a.name not in bots:
+        print(f"이미 없음: {a.name}")
+        return
+    bot = resolve_bot(a.name)  # 삭제 전에 경로 확보
+    del bots[a.name]
+    save_bots(bots)
+    for line in remove_block(Path(bot["folder"])):
+        print(line)
+    p = plist_path(bot)
+    if p.exists():
+        p.unlink()
+        print(f"plist 제거: {p}")
+    # state_dir는 어떤 경우에도 삭제하지 않는다 — 경로만 안내
+    print(f"제거됨: {a.name} (페어링 파일 보존: {bot['state_dir']})")
 
 
 def main() -> None:
