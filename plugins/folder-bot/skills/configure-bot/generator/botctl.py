@@ -69,10 +69,56 @@ def install_scripts() -> list[str]:
     return out
 
 
+def find_tmux() -> str:
+    for c in (shutil.which("tmux"), "/opt/homebrew/bin/tmux", "/usr/local/bin/tmux"):
+        if c and Path(c).exists():
+            return c
+    sys.exit("오류: tmux를 찾을 수 없음 — brew install tmux")
+
+
+def build_cmd(bot: dict) -> str:
+    """plist·수동 기동 공용 세션 명령. bot-restart.sh 파서가 'cd <폴더>'를 읽는다."""
+    path_esc = os.environ.get("PATH", "").replace("&", "&amp;")
+    parts = [f"cd {bot['folder']}",
+             f'export PATH="{path_esc}"',
+             f"export DISCORD_STATE_DIR={bot['state_dir']}"]
+    flags = ""
+    if bot["remote_control"]:
+        flags = f" -n {bot['session']} --remote-control {bot['remote_control']}"
+    parts.append(f"exec {home()}/.local/bin/bot-up{flags}"
+                 " --channels plugin:discord@claude-plugins-official")
+    return "/bin/zsh -lc '" + "; ".join(parts) + "'"
+
+
+def plist_path(bot: dict) -> Path:
+    return home() / f"Library/LaunchAgents/com.folder-bot.{bot['name']}.plist"
+
+
+def write_plist(bot: dict) -> list[str]:
+    import plistlib
+    p = plist_path(bot)
+    if not bot["autostart"]:
+        if p.exists():
+            p.unlink()
+            return [f"plist 제거(autostart off): {p}"]
+        return []
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = {"Label": f"com.folder-bot.{bot['name']}",
+            "ProgramArguments": [find_tmux(), "new-session", "-d", "-s",
+                                 bot["session"], build_cmd(bot)],
+            "RunAtLoad": True}
+    blob = plistlib.dumps(data)
+    if not (p.exists() and p.read_bytes() == blob):
+        p.write_bytes(blob)
+        return [f"plist 생성: {p} (다음 부팅부터 자동 기동)"]
+    return []
+
+
 def install_all(bot: dict) -> list[str]:
     """add 후 설치 일괄 수행 — 스크립트·plist·지침 블록."""
     lines = []
     lines += install_scripts()
+    lines += write_plist(bot)
     return lines
 
 

@@ -61,3 +61,32 @@ def test_install_scripts_idempotent(tmp_path):
     run(tmp_path, "add", "--name", "b", "--folder", str(folder),
         "--session", "b-bot", "--no-autostart", "--no-directive-block")
     assert (bin_dir / "bot-up").stat().st_mtime == mtime  # 내용 동일 → 재쓰기 없음
+
+
+import plistlib
+
+
+def test_plist_shape_matches_bot_restart_parser(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    r = run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+            "--session", "b-bot", "--no-directive-block")
+    assert r.returncode == 0, r.stderr
+    p = tmp_path / "Library/LaunchAgents/com.folder-bot.b.plist"
+    a = plistlib.loads(p.read_bytes())["ProgramArguments"]
+    # bot-restart.sh 파서 전제: '-s' 다음이 세션명, 마지막 인자가 CMD
+    assert a[a.index("-s") + 1] == "b-bot" and "new-session" in a
+    cmd = a[-1]
+    assert f"cd {folder}" in cmd and "DISCORD_STATE_DIR=" in cmd
+    assert "/.local/bin/bot-up" in cmd and "--channels plugin:discord@claude-plugins-official" in cmd
+    assert "-n b-bot" in cmd and "--remote-control b-bot" in cmd
+
+
+def test_no_autostart_removes_plist(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--no-directive-block")
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--no-directive-block", "--no-autostart")
+    assert not (tmp_path / "Library/LaunchAgents/com.folder-bot.b.plist").exists()
