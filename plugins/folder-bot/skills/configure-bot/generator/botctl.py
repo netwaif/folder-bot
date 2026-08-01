@@ -8,8 +8,12 @@ launchctl bootout은 실행하지 않는다 — 파일 생성/삭제 + tmux kill
 import argparse
 import json
 import os
+import shutil
+import stat
 import sys
 from pathlib import Path
+
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
 
 
 def home() -> Path:
@@ -51,9 +55,25 @@ def resolve_bot(name: str) -> dict:
     return b
 
 
+def install_scripts() -> list[str]:
+    """assets의 bot-up/bot-restart를 ~/.local/bin에 멱등 설치."""
+    out = []
+    bin_dir = home() / ".local/bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for src_name, dst_name in (("bot-up.sh", "bot-up"), ("bot-restart.sh", "bot-restart")):
+        src, dst = ASSETS / src_name, bin_dir / dst_name
+        if not (dst.exists() and dst.read_bytes() == src.read_bytes()):
+            shutil.copyfile(src, dst)
+            out.append(f"스크립트 설치: {dst}")
+        dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return out
+
+
 def install_all(bot: dict) -> list[str]:
-    """add 후 설치 일괄 수행 — 스크립트·plist·지침 블록 (후속 태스크에서 채운다)."""
-    return []
+    """add 후 설치 일괄 수행 — 스크립트·plist·지침 블록."""
+    lines = []
+    lines += install_scripts()
+    return lines
 
 
 def cmd_add(a) -> None:

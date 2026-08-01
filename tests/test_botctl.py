@@ -47,3 +47,17 @@ def test_resolve_defaults(tmp_path):
     r = run(tmp_path, "list")
     assert "b-bot" in r.stdout            # session
     assert ".discord-state" in r.stdout   # state_dir 기본값 표시
+
+
+def test_install_scripts_idempotent(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    r = run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+            "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    assert r.returncode == 0
+    bin_dir = tmp_path / ".local/bin"
+    assert (bin_dir / "bot-up").exists() and (bin_dir / "bot-restart").exists()
+    assert os.access(bin_dir / "bot-up", os.X_OK)
+    mtime = (bin_dir / "bot-up").stat().st_mtime
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    assert (bin_dir / "bot-up").stat().st_mtime == mtime  # 내용 동일 → 재쓰기 없음
