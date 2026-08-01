@@ -144,13 +144,30 @@ def remove_block(folder: Path) -> list[str]:
     return [f"CLAUDE.md 지침 블록 제거: {md}"]
 
 
-def install_all(bot: dict) -> list[str]:
+def allow_project_mcp(folder: Path) -> list[str]:
+    """폴더의 프로젝트 MCP 자동 허용 — 무인 재시작이 승인 다이얼로그에 막히지 않게 한다.
+
+    .claude/settings.local.json에 enableAllProjectMcpServers=true를 병합(기존 키 보존).
+    """
+    p = folder / ".claude/settings.local.json"
+    data = json.loads(p.read_text()) if p.exists() else {}
+    if data.get("enableAllProjectMcpServers") is True:
+        return []
+    data["enableAllProjectMcpServers"] = True
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return [f"프로젝트 MCP 자동 허용 설정: {p}"]
+
+
+def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
     """add 후 설치 일괄 수행 — 스크립트·plist·지침 블록."""
     lines = []
     lines += install_scripts()
     lines += write_plist(bot)
     if bot["directive_block"]:
         lines += install_block(Path(bot["folder"]))
+    if allow_mcp:
+        lines += allow_project_mcp(Path(bot["folder"]))
     return lines
 
 
@@ -167,7 +184,7 @@ def cmd_add(a) -> None:
         entry["autostart"] = False
     bots[a.name] = entry
     save_bots(bots)
-    for line in install_all(resolve_bot(a.name)):
+    for line in install_all(resolve_bot(a.name), allow_mcp=a.allow_project_mcp):
         print(line)
     print(f"등록됨: {a.name}")
 
@@ -277,6 +294,7 @@ def main() -> None:
     ap.add_argument("--no-remote-control", action="store_true")
     ap.add_argument("--no-directive-block", action="store_true")
     ap.add_argument("--no-autostart", action="store_true")
+    ap.add_argument("--allow-project-mcp", action="store_true")
     ap.set_defaults(fn=cmd_add)
 
     sub.add_parser("list", help="봇 목록").set_defaults(fn=cmd_list)

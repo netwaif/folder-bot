@@ -151,3 +151,15 @@ def test_doctor_reports_missing_pairing(tmp_path):
         "--no-directive-block")
     r = run(tmp_path, "doctor")
     assert "페어링" in r.stdout and "[WARN]" in r.stdout   # .env 없음 → WARN
+
+
+def test_allow_project_mcp_merges_settings(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (folder / ".claude").mkdir()
+    (folder / ".claude/settings.local.json").write_text('{"enabledMcpjsonServers": ["gemini"]}')
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block",
+        "--allow-project-mcp")
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert data["enableAllProjectMcpServers"] is True
+    assert data["enabledMcpjsonServers"] == ["gemini"]   # 기존 키 보존

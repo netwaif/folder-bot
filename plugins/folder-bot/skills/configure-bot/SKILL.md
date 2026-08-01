@@ -37,6 +37,13 @@ python3 "<이 스킬 폴더>/generator/botctl.py" add --name <이름> --folder <
 지침 블록이 이미 자체 규칙으로 있는 폴더 — 예: 멀티 에이전트 하네스의 오케스트레이터 — 는
 `--no-directive-block`.) 출력을 그대로 보여준다.
 
+**프로젝트 MCP 주의**: 폴더에 프로젝트 MCP 서버가 설정돼 있으면(.mcp.json 또는
+프로젝트 설정), 봇 세션이 뜰 때마다 승인 다이얼로그에 걸려 **무인 재시작이 막힌다**.
+이 경우 사용자에게 "이 폴더의 프로젝트 MCP를 자동 허용할까요?"를 확인받고, 동의하면
+add에 `--allow-project-mcp`를 붙인다(`.claude/settings.local.json`에
+`enableAllProjectMcpServers: true` 병합 — 기존 키 보존). 동의하지 않으면 재시작 후
+다이얼로그를 수동으로 풀어야 함을 안내한다.
+
 ### 4. 디스코드 포탈 수동 단계 (순서대로 안내, 사용자가 끝냈다고 할 때까지 대기)
 
 1. https://discord.com/developers/applications → **New Application** → 이름 입력
