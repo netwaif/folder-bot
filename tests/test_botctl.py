@@ -107,3 +107,29 @@ def test_directive_block_nondestructive(tmp_path):
     assert text == (folder / "CLAUDE.md").read_text()            # 멱등
     run(tmp_path, "remove", "--name", "b", "--keep-state")
     assert (folder / "CLAUDE.md").read_text() == original        # 블록 외 diff 0
+
+
+def test_pair_writes_state(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    r = run(tmp_path, "pair", "--name", "b", "--token", "tok123",
+            "--user-id", "111", "--channel-id", "222")
+    assert r.returncode == 0, r.stderr
+    st = folder / ".discord-state"
+    assert (st / ".env").read_text() == "DISCORD_BOT_TOKEN=tok123\n"
+    assert oct((st / ".env").stat().st_mode)[-3:] == "600"
+    acc = json.loads((st / "access.json").read_text())
+    assert acc["dmPolicy"] == "allowlist" and acc["allowFrom"] == ["111"]
+    assert acc["groups"]["222"] == {"requireMention": False, "allowFrom": ["111"]}
+    assert (st / "inbox").is_dir()
+
+
+def test_pair_refuses_overwrite(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    run(tmp_path, "pair", "--name", "b", "--token", "tok1", "--user-id", "1", "--channel-id", "2")
+    r = run(tmp_path, "pair", "--name", "b", "--token", "tok2", "--user-id", "1", "--channel-id", "2")
+    assert r.returncode != 0            # 기존 페어링 보호 — --force 없이 덮지 않음
+    assert "tok1" in (folder / ".discord-state/.env").read_text()

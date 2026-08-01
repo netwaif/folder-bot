@@ -196,6 +196,23 @@ def cmd_remove(a) -> None:
     print(f"제거됨: {a.name} (페어링 파일 보존: {bot['state_dir']})")
 
 
+def cmd_pair(a) -> None:
+    bot = resolve_bot(a.name)
+    st = Path(bot["state_dir"])
+    env = st / ".env"
+    if env.exists() and not a.force:
+        sys.exit(f"오류: {env} 이미 존재 — 덮어쓰려면 --force")
+    st.mkdir(parents=True, exist_ok=True)
+    (st / "inbox").mkdir(exist_ok=True)
+    env.write_text(f"DISCORD_BOT_TOKEN={a.token}\n")
+    env.chmod(0o600)
+    access = {"dmPolicy": "allowlist", "allowFrom": [a.user_id],
+              "groups": {a.channel_id: {"requireMention": False, "allowFrom": [a.user_id]}},
+              "pending": {}}
+    (st / "access.json").write_text(json.dumps(access, ensure_ascii=False, indent=2) + "\n")
+    print(f"페어링 완료: {st}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -216,6 +233,14 @@ def main() -> None:
     rp.add_argument("--name", required=True)
     rp.add_argument("--keep-state", action="store_true")
     rp.set_defaults(fn=cmd_remove)
+
+    pp = sub.add_parser("pair", help="토큰·접근 파일 생성")
+    pp.add_argument("--name", required=True)
+    pp.add_argument("--token", required=True)
+    pp.add_argument("--user-id", required=True)
+    pp.add_argument("--channel-id", required=True)
+    pp.add_argument("--force", action="store_true")
+    pp.set_defaults(fn=cmd_pair)
 
     a = p.parse_args()
     a.fn(a)
