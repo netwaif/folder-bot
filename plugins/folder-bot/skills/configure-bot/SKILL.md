@@ -90,6 +90,25 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
   (선택: `~/.config/folder-bot/config.json`에 `{"webhook_url": "..."}`) → **"이어서하자"**.
 - 부팅 자동 기동은 다음 재부팅부터. 지금 당장은 이미 `start`로 떠 있다.
 
+## codex 엔진 봇 (폴더가 codex로 운용되는 경우)
+
+폴더를 codex(코덱스 CLI) 세션으로 쓰는 사용자는 `--engine codex`로 추가한다.
+전제: codex-discord 브리지(github.com/netwaif/codex-discord)가 설치돼 있어야 하며,
+경로는 `~/.config/folder-bot/config.json`의 `codex_bridge_dir`(또는 `--bridge-dir`)로 지정.
+
+```bash
+python3 "<이 스킬 폴더>/generator/botctl.py" add --name <이름> --folder <폴더> --session <세션명> --engine codex
+python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token <토큰> --user-id <ID> --channel-id <ID>
+python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
+```
+
+- add = 브리지 인스턴스(.env.<이름>·data-<이름>) + 데몬·TUI plist + **AGENTS.md** 지침 블록
+  (전용 채널이라 호명 게이트 off — `TUI_TRIGGER_GATE=off`).
+- start = TUI 기동(tui-up.sh, "준비 완료" 확인) + 데몬 bootstrap. 연결 판정은 브리지 로그
+  (`<브리지>/logs/daemon-<이름>.log`)의 "로그인:" 줄로 확인해 보고한다.
+- 재시작 리추얼은 동일: "세션 마감하고 재시작해" → tui-restart.sh(웹훅 통지) → "이어서하자".
+- 디스코드 포탈 수동 단계는 claude와 완전히 같다(위 4번 절).
+
 ## 봇 제거
 
 ```bash

@@ -172,3 +172,59 @@ def test_doctor_warns_untrusted_workspace(tmp_path):
         "--no-directive-block")
     r = run(tmp_path, "doctor")
     assert "미신뢰" in r.stdout                      # ~/.claude.json 없음 → 미신뢰 WARN
+
+
+def _fake_bridge(tmp_path):
+    bridge = tmp_path / "bridge"
+    (bridge / "scripts").mkdir(parents=True)
+    (bridge / "scripts/tui-up.sh").write_text("#!/bin/bash\necho ok\n")
+    (bridge / "logs").mkdir()
+    return bridge
+
+
+def test_codex_add_creates_env_and_plists(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    bridge = _fake_bridge(tmp_path)
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    r = run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+            "--engine", "codex", "--bridge-dir", str(bridge))
+    assert r.returncode == 0, r.stderr
+    env = (bridge / ".env.b").read_text()
+    assert f"CODEX_WORKDIR={folder}" in env and "TUI_PANE=b-bot:0.0" in env
+    assert "TUI_TRIGGER_GATE=off" in env and "DISCORD_TOKEN=\n" in env
+    assert (bridge / "data-b").is_dir()
+    la = tmp_path / "Library/LaunchAgents"
+    assert (la / "com.codex-discord.b.plist").exists()
+    assert (la / "com.codex-discord.b-tui.plist").exists()
+    # 지침 블록은 AGENTS.md로, 브리지 경로가 렌더돼 들어간다
+    agents = (folder / "AGENTS.md").read_text()
+    assert "<!-- store:discord-bot:start -->" in agents
+    assert f"{bridge}/scripts/tui-restart.sh .env.b" in agents
+    assert not (folder / "CLAUDE.md").exists()
+
+
+def test_codex_pair_fills_env_lines(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    bridge = _fake_bridge(tmp_path)
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--engine", "codex", "--bridge-dir", str(bridge), "--no-directive-block")
+    r = run(tmp_path, "pair", "--name", "b", "--token", "tok9",
+            "--user-id", "11", "--channel-id", "22")
+    assert r.returncode == 0, r.stderr
+    env = (bridge / ".env.b").read_text()
+    assert "DISCORD_TOKEN=tok9" in env and "ALLOWED_USER_IDS=11" in env
+    assert "TUI_CHANNEL_ID=22" in env and "CHANNEL_IDS=22" in env
+    r2 = run(tmp_path, "pair", "--name", "b", "--token", "tok10",
+             "--user-id", "11", "--channel-id", "22")
+    assert r2.returncode != 0 and "tok9" in (bridge / ".env.b").read_text()
+
+
+def test_codex_doctor_warns_unpaired(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    bridge = _fake_bridge(tmp_path)
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--engine", "codex", "--bridge-dir", str(bridge), "--no-directive-block")
+    r = run(tmp_path, "doctor")
+    assert "토큰 없음" in r.stdout and "데몬" in r.stdout

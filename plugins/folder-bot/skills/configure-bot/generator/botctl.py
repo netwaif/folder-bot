@@ -39,6 +39,14 @@ def save_bots(bots: dict) -> None:
     bots_path().write_text(json.dumps(bots, ensure_ascii=False, indent=2) + "\n")
 
 
+def load_config() -> dict:
+    p = config_dir() / "config.json"
+    try:
+        return json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
 def resolve_bot(name: str) -> dict:
     raw = load_bots().get(name)
     if raw is None:
@@ -50,6 +58,10 @@ def resolve_bot(name: str) -> dict:
     b.setdefault("state_dir", str(Path(b["folder"]) / ".discord-state"))
     b.setdefault("autostart", True)
     b.setdefault("directive_block", True)
+    if b["engine"] == "codex":
+        b.setdefault("bridge_dir",
+                     load_config().get("codex_bridge_dir", "~/codex-discord"))
+        b["bridge_dir"] = str(Path(b["bridge_dir"]).expanduser())
     for k in ("folder", "state_dir"):
         b[k] = str(Path(b[k]).expanduser())
     return b
@@ -118,21 +130,33 @@ MARK_START = "<!-- store:discord-bot:start -->"
 MARK_END = "<!-- store:discord-bot:end -->"
 
 
-def install_block(folder: Path) -> list[str]:
-    """CLAUDE.md에 지침 블록을 마커로 append(멱등). SESSION.md는 건드리지 않는다."""
-    md = folder / "CLAUDE.md"
-    body = (ASSETS / "directive-block.md").read_text()
+def _directive_target(bot: dict) -> tuple[str, str, dict]:
+    """엔진별 (지침 파일명, asset 파일명, 렌더 치환값)."""
+    if bot["engine"] == "codex":
+        return ("AGENTS.md", "directive-block-codex.md",
+                {"{BRIDGE_DIR}": bot["bridge_dir"], "{ENV_FILE}": f".env.{bot['name']}"})
+    return ("CLAUDE.md", "directive-block.md", {})
+
+
+def install_block(bot: dict) -> list[str]:
+    """지침 파일(CLAUDE.md/AGENTS.md)에 블록을 마커로 append(멱등). SESSION.md는 건드리지 않는다."""
+    target, asset, render = _directive_target(bot)
+    md = Path(bot["folder"]) / target
+    body = (ASSETS / asset).read_text()
+    for k, v in render.items():
+        body = body.replace(k, v)
     cur = md.read_text() if md.exists() else ""
     if MARK_START in cur:
         return []
     block = f"\n{MARK_START}\n{body.rstrip()}\n{MARK_END}\n"
     md.write_text(cur + block)
-    return [f"CLAUDE.md 지침 블록 설치: {md}"]
+    return [f"{target} 지침 블록 설치: {md}"]
 
 
-def remove_block(folder: Path) -> list[str]:
+def remove_block(bot: dict) -> list[str]:
     """마커 범위만 걷어내 원문을 복원한다(블록 외 diff 0)."""
-    md = folder / "CLAUDE.md"
+    target, _, _ = _directive_target(bot)
+    md = Path(bot["folder"]) / target
     if not md.exists():
         return []
     cur = md.read_text()
@@ -141,7 +165,83 @@ def remove_block(folder: Path) -> list[str]:
     pre, rest = cur.split(MARK_START, 1)
     _, post = rest.split(MARK_END, 1)
     md.write_text(pre.rstrip("\n") + ("\n" if pre.strip() else "") + post.lstrip("\n"))
-    return [f"CLAUDE.md 지침 블록 제거: {md}"]
+    return [f"{target} 지침 블록 제거: {md}"]
+
+
+# ---------------------------------------------------------------- codex 엔진 (브리지 인스턴스)
+
+def find_node() -> str:
+    c = shutil.which("node")
+    if c:
+        return c
+    cands = sorted(Path.home().glob(".nvm/versions/node/*/bin/node"))
+    if cands:
+        return str(cands[-1])
+    sys.exit("오류: node를 찾을 수 없음 — codex 브리지 데몬에 필요")
+
+
+def codex_env_path(bot: dict) -> Path:
+    return Path(bot["bridge_dir"]) / f".env.{bot['name']}"
+
+
+def write_codex_env(bot: dict) -> list[str]:
+    """브리지 인스턴스 .env.<이름> 생성(이미 있으면 보존 — 토큰이 들어있을 수 있다)."""
+    p = codex_env_path(bot)
+    if p.exists():
+        return []
+    codex_bin = shutil.which("codex") or ""
+    lines = [
+        f"# folder-bot codex 봇 인스턴스: {bot['name']}",
+        "DISCORD_TOKEN=",
+        "ALLOWED_USER_IDS=",
+        f"CODEX_WORKDIR={bot['folder']}",
+        *( [f"CODEX_BIN={codex_bin}"] if codex_bin else [] ),
+        f"DATA_DIR=data-{bot['name']}",
+        f"TUI_PANE={bot['session']}:0.0",
+        "TUI_CHANNEL_ID=",
+        "CHANNEL_IDS=",
+        "TUI_TRIGGER_GATE=off",  # 전용 채널 — 호명 없이 모든 메시지에 응답
+    ]
+    p.write_text("\n".join(lines) + "\n")
+    p.chmod(0o600)
+    (Path(bot["bridge_dir"]) / f"data-{bot['name']}").mkdir(exist_ok=True)
+    return [f"브리지 인스턴스 생성: {p} (토큰·채널은 pair에서)"]
+
+
+def write_codex_plists(bot: dict) -> list[str]:
+    import plistlib
+    out = []
+    la = home() / "Library/LaunchAgents"
+    daemon_p = la / f"com.codex-discord.{bot['name']}.plist"
+    tui_p = la / f"com.codex-discord.{bot['name']}-tui.plist"
+    if not bot["autostart"]:
+        for p in (daemon_p, tui_p):
+            if p.exists():
+                p.unlink()
+                out.append(f"plist 제거(autostart off): {p}")
+        return out
+    node = find_node()
+    path_env = f"{Path(node).parent}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+    daemon = {"Label": f"com.codex-discord.{bot['name']}",
+              "ProgramArguments": [node, f"--env-file=.env.{bot['name']}", "src/index.mjs"],
+              "WorkingDirectory": bot["bridge_dir"],
+              "EnvironmentVariables": {"PATH": path_env},
+              "StandardOutPath": f"{bot['bridge_dir']}/logs/daemon-{bot['name']}.log",
+              "StandardErrorPath": f"{bot['bridge_dir']}/logs/daemon-{bot['name']}.log",
+              "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 15}
+    tui = {"Label": f"com.codex-discord.{bot['name']}-tui",
+           "ProgramArguments": [f"{bot['bridge_dir']}/scripts/tui-up.sh", f".env.{bot['name']}"],
+           "EnvironmentVariables": {"PATH": path_env},
+           "StandardOutPath": f"{bot['bridge_dir']}/logs/tui-up-{bot['name']}.log",
+           "StandardErrorPath": f"{bot['bridge_dir']}/logs/tui-up-{bot['name']}.log",
+           "RunAtLoad": True}
+    la.mkdir(parents=True, exist_ok=True)
+    for p, data in ((daemon_p, daemon), (tui_p, tui)):
+        blob = plistlib.dumps(data)
+        if not (p.exists() and p.read_bytes() == blob):
+            p.write_bytes(blob)
+            out.append(f"plist 생성: {p}")
+    return out
 
 
 def allow_project_mcp(folder: Path) -> list[str]:
@@ -160,12 +260,20 @@ def allow_project_mcp(folder: Path) -> list[str]:
 
 
 def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
-    """add 후 설치 일괄 수행 — 스크립트·plist·지침 블록."""
+    """add 후 설치 일괄 수행 — 엔진별 스크립트·plist·지침 블록."""
     lines = []
-    lines += install_scripts()
-    lines += write_plist(bot)
+    if bot["engine"] == "codex":
+        if not Path(bot["bridge_dir"]).is_dir():
+            sys.exit(f"오류: codex 브리지 폴더 없음: {bot['bridge_dir']}\n"
+                     "github.com/netwaif/codex-discord 를 받아 설치하거나 "
+                     "config.json의 codex_bridge_dir를 지정하세요")
+        lines += write_codex_env(bot)
+        lines += write_codex_plists(bot)
+    else:
+        lines += install_scripts()
+        lines += write_plist(bot)
     if bot["directive_block"]:
-        lines += install_block(Path(bot["folder"]))
+        lines += install_block(bot)
     if allow_mcp:
         lines += allow_project_mcp(Path(bot["folder"]))
     return lines
@@ -173,7 +281,10 @@ def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
 
 def cmd_add(a) -> None:
     bots = load_bots()
-    entry = {"engine": "claude", "folder": a.folder, "session": a.session}
+    entry = {"engine": a.engine, "folder": a.folder, "session": a.session}
+    if a.engine == "codex":
+        entry["bridge_dir"] = a.bridge_dir or load_config().get(
+            "codex_bridge_dir", "~/codex-discord")
     if a.no_remote_control:
         entry["remote_control"] = False
     elif a.remote_control:
@@ -196,6 +307,7 @@ def cmd_list(a) -> None:
 
 
 def cmd_remove(a) -> None:
+    import subprocess
     bots = load_bots()
     if a.name not in bots:
         print(f"이미 없음: {a.name}")
@@ -203,8 +315,23 @@ def cmd_remove(a) -> None:
     bot = resolve_bot(a.name)  # 삭제 전에 경로 확보
     del bots[a.name]
     save_bots(bots)
-    for line in remove_block(Path(bot["folder"])):
+    for line in remove_block(bot):
         print(line)
+    if bot["engine"] == "codex":
+        # 데몬은 node 직속 job이라 bootout 안전(tmux 서버를 띄우는 job이 아님).
+        # KeepAlive라 파일만 지우면 되살아나므로 내리고 지운다. TUI는 kill-session.
+        uid = os.getuid()
+        subprocess.run(["launchctl", "bootout",
+                        f"gui/{uid}/com.codex-discord.{bot['name']}"], capture_output=True)
+        subprocess.run([find_tmux(), "kill-session", "-t", bot["session"]], capture_output=True)
+        la = home() / "Library/LaunchAgents"
+        for p in (la / f"com.codex-discord.{bot['name']}.plist",
+                  la / f"com.codex-discord.{bot['name']}-tui.plist"):
+            if p.exists():
+                p.unlink()
+                print(f"plist 제거: {p}")
+        print(f"제거됨: {a.name} (토큰 파일 보존: {codex_env_path(bot)})")
+        return
     p = plist_path(bot)
     if p.exists():
         p.unlink()
@@ -215,6 +342,23 @@ def cmd_remove(a) -> None:
 
 def cmd_pair(a) -> None:
     bot = resolve_bot(a.name)
+    if bot["engine"] == "codex":
+        p = codex_env_path(bot)
+        if not p.exists():
+            sys.exit(f"오류: {p} 없음 — add를 먼저 실행")
+        text = p.read_text()
+        if "DISCORD_TOKEN=\n" not in text and not a.force:
+            sys.exit(f"오류: {p} 토큰 이미 설정됨 — 덮어쓰려면 --force")
+        subst = {"DISCORD_TOKEN": a.token, "ALLOWED_USER_IDS": a.user_id,
+                 "TUI_CHANNEL_ID": a.channel_id, "CHANNEL_IDS": a.channel_id}
+        lines = []
+        for line in text.splitlines():
+            key = line.split("=", 1)[0]
+            lines.append(f"{key}={subst[key]}" if key in subst else line)
+        p.write_text("\n".join(lines) + "\n")
+        p.chmod(0o600)
+        print(f"페어링 완료: {p}")
+        return
     st = Path(bot["state_dir"])
     env = st / ".env"
     if env.exists() and not a.force:
@@ -234,6 +378,24 @@ def cmd_start(a) -> None:
     import subprocess
     bot = resolve_bot(a.name)
     tmux = find_tmux()
+    if bot["engine"] == "codex":
+        tui_up = f"{bot['bridge_dir']}/scripts/tui-up.sh"
+        if a.dry_run:
+            print(f"{tui_up} .env.{bot['name']} + launchctl bootstrap "
+                  f"com.codex-discord.{bot['name']}")
+            return
+        r = subprocess.run([tui_up, f".env.{bot['name']}"], capture_output=True, text=True)
+        print(r.stdout.strip())
+        if r.returncode != 0:
+            sys.exit(f"오류: TUI 기동 실패 — {bot['bridge_dir']}/logs 확인")
+        uid = os.getuid()
+        label = f"com.codex-discord.{bot['name']}"
+        if subprocess.run(["launchctl", "print", f"gui/{uid}/{label}"],
+                          capture_output=True).returncode != 0:
+            subprocess.run(["launchctl", "bootstrap", f"gui/{uid}",
+                            str(home() / f"Library/LaunchAgents/{label}.plist")], check=True)
+            print(f"데몬 기동: {label}")
+        return
     argv = [tmux, "new-session", "-d", "-s", bot["session"], build_cmd(bot)]
     if a.dry_run:
         print(" ".join(argv))
@@ -266,26 +428,47 @@ def cmd_doctor(a) -> None:
                 fails += 1
             print(f"[{level}] {name}: {msg}")
 
-        p = plist_path(b)
-        if b["autostart"] and not p.exists():
-            rep("FAIL", f"plist 없음: {p}")
-        trusted = False
-        try:
-            proj = json.loads((home() / ".claude.json").read_text())
-            trusted = proj.get("projects", {}).get(b["folder"], {}).get(
-                "hasTrustDialogAccepted") is True
-        except (OSError, ValueError):
-            pass
-        if not trusted:
-            rep("WARN", "워크스페이스 미신뢰 — 봇 세션이 승인 다이얼로그에 막힐 수 있음"
-                        " (해당 폴더에서 claude를 한 번 열어 신뢰를 수락할 것)")
-        env = Path(b["state_dir"]) / ".env"
-        if not env.exists():
-            rep("WARN", f"페어링 안 됨(.env 없음): {env}")
-        md = Path(b["folder"]) / "CLAUDE.md"
+        if b["engine"] == "codex":
+            la = home() / "Library/LaunchAgents"
+            if b["autostart"]:
+                for p in (la / f"com.codex-discord.{b['name']}.plist",
+                          la / f"com.codex-discord.{b['name']}-tui.plist"):
+                    if not p.exists():
+                        rep("FAIL", f"plist 없음: {p}")
+            envp = codex_env_path(b)
+            if not envp.exists() or "DISCORD_TOKEN=\n" in envp.read_text():
+                rep("WARN", f"페어링 안 됨(토큰 없음): {envp}")
+            pid = Path(b["bridge_dir"]) / f"data-{b['name']}" / "daemon.pid"
+            daemon_alive = False
+            try:
+                os.kill(int(pid.read_text().strip()), 0)
+                daemon_alive = True
+            except (OSError, ValueError):
+                pass
+            if not daemon_alive:
+                rep("WARN", "브리지 데몬 죽음/미기동")
+        else:
+            p = plist_path(b)
+            if b["autostart"] and not p.exists():
+                rep("FAIL", f"plist 없음: {p}")
+            trusted = False
+            try:
+                proj = json.loads((home() / ".claude.json").read_text())
+                trusted = proj.get("projects", {}).get(b["folder"], {}).get(
+                    "hasTrustDialogAccepted") is True
+            except (OSError, ValueError):
+                pass
+            if not trusted:
+                rep("WARN", "워크스페이스 미신뢰 — 봇 세션이 승인 다이얼로그에 막힐 수 있음"
+                            " (해당 폴더에서 claude를 한 번 열어 신뢰를 수락할 것)")
+            env = Path(b["state_dir"]) / ".env"
+            if not env.exists():
+                rep("WARN", f"페어링 안 됨(.env 없음): {env}")
+        target, _, _ = _directive_target(b)
+        md = Path(b["folder"]) / target
         has_block = md.exists() and MARK_START in md.read_text()
         if b["directive_block"] and not has_block:
-            rep("WARN", "CLAUDE.md 지침 블록 없음")
+            rep("WARN", f"{target} 지침 블록 없음")
         alive = subprocess.run([find_tmux(), "has-session", "-t", b["session"]],
                                capture_output=True).returncode == 0
         rep("OK" if alive else "WARN", f"tmux 세션 {'생존' if alive else '없음'}: {b['session']}")
@@ -300,6 +483,8 @@ def main() -> None:
     ap.add_argument("--name", required=True)
     ap.add_argument("--folder", required=True)
     ap.add_argument("--session", required=True)
+    ap.add_argument("--engine", choices=["claude", "codex"], default="claude")
+    ap.add_argument("--bridge-dir", help="codex 전용: codex-discord 브리지 폴더")
     ap.add_argument("--remote-control")
     ap.add_argument("--no-remote-control", action="store_true")
     ap.add_argument("--no-directive-block", action="store_true")
