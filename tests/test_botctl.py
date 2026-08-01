@@ -133,3 +133,21 @@ def test_pair_refuses_overwrite(tmp_path):
     r = run(tmp_path, "pair", "--name", "b", "--token", "tok2", "--user-id", "1", "--channel-id", "2")
     assert r.returncode != 0            # 기존 페어링 보호 — --force 없이 덮지 않음
     assert "tok1" in (folder / ".discord-state/.env").read_text()
+
+
+def test_start_dry_run_prints_command(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    r = run(tmp_path, "start", "--name", "b", "--dry-run")
+    assert r.returncode == 0
+    assert "new-session" in r.stdout and "b-bot" in r.stdout and "bot-up" in r.stdout
+
+
+def test_doctor_reports_missing_pairing(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--no-directive-block")
+    r = run(tmp_path, "doctor")
+    assert "페어링" in r.stdout and "[WARN]" in r.stdout   # .env 없음 → WARN

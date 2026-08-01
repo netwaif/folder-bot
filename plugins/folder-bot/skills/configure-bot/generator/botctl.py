@@ -213,6 +213,58 @@ def cmd_pair(a) -> None:
     print(f"페어링 완료: {st}")
 
 
+def cmd_start(a) -> None:
+    import subprocess
+    bot = resolve_bot(a.name)
+    tmux = find_tmux()
+    argv = [tmux, "new-session", "-d", "-s", bot["session"], build_cmd(bot)]
+    if a.dry_run:
+        print(" ".join(argv))
+        return
+    if subprocess.run([tmux, "has-session", "-t", bot["session"]],
+                      capture_output=True).returncode == 0:
+        print(f"이미 실행 중: {bot['session']}")
+        return
+    subprocess.run(argv, check=True)
+    print(f"기동: {bot['session']} — 연결 판정은 MCP 로그(bot-up이 감시)")
+
+
+def cmd_stop(a) -> None:
+    import subprocess
+    bot = resolve_bot(a.name)
+    subprocess.run([find_tmux(), "kill-session", "-t", bot["session"]], capture_output=True)
+    print(f"중지: {bot['session']}")
+
+
+def cmd_doctor(a) -> None:
+    import subprocess
+    fails = 0
+    names = [a.name] if a.name else list(load_bots())
+    for name in names:
+        b = resolve_bot(name)
+
+        def rep(level, msg):
+            nonlocal fails
+            if level == "FAIL":
+                fails += 1
+            print(f"[{level}] {name}: {msg}")
+
+        p = plist_path(b)
+        if b["autostart"] and not p.exists():
+            rep("FAIL", f"plist 없음: {p}")
+        env = Path(b["state_dir"]) / ".env"
+        if not env.exists():
+            rep("WARN", f"페어링 안 됨(.env 없음): {env}")
+        md = Path(b["folder"]) / "CLAUDE.md"
+        has_block = md.exists() and MARK_START in md.read_text()
+        if b["directive_block"] and not has_block:
+            rep("WARN", "CLAUDE.md 지침 블록 없음")
+        alive = subprocess.run([find_tmux(), "has-session", "-t", b["session"]],
+                               capture_output=True).returncode == 0
+        rep("OK" if alive else "WARN", f"tmux 세션 {'생존' if alive else '없음'}: {b['session']}")
+    sys.exit(1 if fails else 0)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -241,6 +293,19 @@ def main() -> None:
     pp.add_argument("--channel-id", required=True)
     pp.add_argument("--force", action="store_true")
     pp.set_defaults(fn=cmd_pair)
+
+    sp = sub.add_parser("start", help="봇 즉시 기동")
+    sp.add_argument("--name", required=True)
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(fn=cmd_start)
+
+    tp = sub.add_parser("stop", help="봇 중지 (tmux kill-session)")
+    tp.add_argument("--name", required=True)
+    tp.set_defaults(fn=cmd_stop)
+
+    dp = sub.add_parser("doctor", help="읽기 전용 진단")
+    dp.add_argument("--name")
+    dp.set_defaults(fn=cmd_doctor)
 
     a = p.parse_args()
     a.fn(a)
