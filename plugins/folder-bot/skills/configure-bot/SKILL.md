@@ -19,6 +19,11 @@ CLAUDE.md는 botctl이 마커 블록(`<!-- store:discord-bot:start/end -->`)만 
 - `uname` = Darwin(macOS)인지. 아니면 "현재 macOS만 검증됨(리눅스는 systemd로 대체 가능하나 수동)"을 안내하고 중단.
 - discord 공식 플러그인: `~/.claude/plugins/cache/claude-plugins-official/discord/` 존재 확인. 없으면 `/plugin`에서 discord 플러그인 설치 안내 후 중단.
 - tmux: `command -v tmux || ls /opt/homebrew/bin/tmux /usr/local/bin/tmux`. 없으면 `brew install tmux` 안내 후 중단.
+- **워크스페이스 신뢰**: 대상 폴더가 현재 폴더면 이미 신뢰 수락된 상태다(사용자가 열면서 수락).
+  **다른 폴더를 원격 설치하는 경우** `~/.claude.json`의 `projects.<폴더>.hasTrustDialogAccepted`를
+  읽어(읽기 전용) false·부재면 안내한다: "그 폴더에서 claude를 한 번 열어 신뢰를 수락해야
+  봇 세션이 승인 다이얼로그에 막히지 않습니다" (2026-08-01 collab 실측 — 미신뢰 워크스페이스는
+  프로젝트 MCP 승인이 세션 한정이라 재시작마다 다이얼로그에 걸린다).
 
 ### 2. 질문 (AskUserQuestion 한 번에)
 

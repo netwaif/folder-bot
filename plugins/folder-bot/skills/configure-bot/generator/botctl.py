@@ -269,6 +269,16 @@ def cmd_doctor(a) -> None:
         p = plist_path(b)
         if b["autostart"] and not p.exists():
             rep("FAIL", f"plist 없음: {p}")
+        trusted = False
+        try:
+            proj = json.loads((home() / ".claude.json").read_text())
+            trusted = proj.get("projects", {}).get(b["folder"], {}).get(
+                "hasTrustDialogAccepted") is True
+        except (OSError, ValueError):
+            pass
+        if not trusted:
+            rep("WARN", "워크스페이스 미신뢰 — 봇 세션이 승인 다이얼로그에 막힐 수 있음"
+                        " (해당 폴더에서 claude를 한 번 열어 신뢰를 수락할 것)")
         env = Path(b["state_dir"]) / ".env"
         if not env.exists():
             rep("WARN", f"페어링 안 됨(.env 없음): {env}")

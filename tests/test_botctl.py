@@ -163,3 +163,12 @@ def test_allow_project_mcp_merges_settings(tmp_path):
     data = json.loads((folder / ".claude/settings.local.json").read_text())
     assert data["enableAllProjectMcpServers"] is True
     assert data["enabledMcpjsonServers"] == ["gemini"]   # 기존 키 보존
+
+
+def test_doctor_warns_untrusted_workspace(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--no-directive-block")
+    r = run(tmp_path, "doctor")
+    assert "미신뢰" in r.stdout                      # ~/.claude.json 없음 → 미신뢰 WARN
