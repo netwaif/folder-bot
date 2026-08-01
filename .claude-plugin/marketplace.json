@@ -1,0 +1,14 @@
+{
+  "name": "folder-bot",
+  "description": "폴더 전용 디스코드 채널 봇 — 업무 폴더의 Claude 세션을 전용 채널 봇으로 만들고, 부팅 자동 기동과 디스코드 원격 재시작(컨텍스트 리사이클)까지 설치한다",
+  "owner": { "name": "netwaif", "email": "netwaif@users.noreply.github.com" },
+  "plugins": [
+    {
+      "name": "folder-bot",
+      "description": "\"이 폴더를 디스코드 봇으로 만들어줘\" — 봇 추가/제거/점검을 한 스킬로. 결정적 엔진(botctl)이 bots.json 정본에서 plist·기동 직렬화·원격 재시작·CLAUDE.md 지침 블록을 멱등 설치. 수동은 디스코드 포탈 단계뿐(스킬이 단계별 안내).",
+      "version": "0.1.0",
+      "source": "./plugins/folder-bot",
+      "author": { "name": "netwaif" }
+    }
+  ]
+}
