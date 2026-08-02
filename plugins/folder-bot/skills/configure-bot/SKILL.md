@@ -32,6 +32,10 @@ CLAUDE.md는 botctl이 마커 블록(`<!-- store:discord-bot:start/end -->`)만 
 - tmux 세션명(기본 = `<이름>-bot`)
 - 리모트 컨트롤 켤지(기본 = 켬 — 폰 claude.ai에서 세션 진입 가능)
 
+AskUserQuestion 도구가 없는 환경(예: codex)에서는 같은 4개를 **채팅으로 질문해 답을 받는다**.
+묻지 않고 기본값을 스스로 확정해 진행하지 말 것(2026-08-02 codex 실측 — 질문을 건너뛰고
+기본값으로 질주한 편차가 있었다).
+
 ### 3. 등록·설치
 
 ```bash
@@ -52,7 +56,9 @@ add에 `--allow-project-mcp`를 붙인다(`.claude/settings.local.json`에
 ### 4. 디스코드 포탈 수동 단계 (순서대로 안내, 사용자가 끝냈다고 할 때까지 대기)
 
 1. https://discord.com/developers/applications → **New Application** → 이름 입력
-2. **Bot** 탭 → **Reset Token** → 토큰 복사(한 번만 보임)
+2. **Bot** 탭 → **Reset Token** → 토큰 복사(한 번만 보임).
+   **복사한 토큰은 채팅에 붙여넣지 않게 안내한다** — 대상 폴더에 파일로 저장하게 한다:
+   `pbpaste > .bot-token && chmod 600 .bot-token` (클립보드에서 바로 파일로 — 셸 히스토리에도 안 남는다)
 3. 같은 화면 Privileged Gateway Intents에서 **MESSAGE CONTENT INTENT** 켜기 → Save
 4. **OAuth2 → URL Generator**: scope `bot` 체크, Bot Permissions에서
    View Channels / Send Messages / Read Message History / Embed Links / Attach Files 체크
@@ -63,13 +69,17 @@ add에 `--allow-project-mcp`를 붙인다(`.claude/settings.local.json`에
 
 ### 5. 페어링
 
-토큰·사용자 ID·채널 ID를 받아:
+**토큰은 채팅으로 받지 않는다** — 대화 로그·모델 서버 전송·화면 노출 위험(매뉴얼 1장 원칙과 동일).
+사용자 ID·채널 ID만 채팅으로 받고, 토큰은 §4에서 만든 `.bot-token` 파일에서 읽는다:
 
 ```bash
-python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token <토큰> --user-id <ID> --channel-id <ID>
+python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token "$(cat <폴더>/.bot-token)" --user-id <ID> --channel-id <ID>
 ```
 
-토큰은 받은 뒤 화면에 다시 출력하지 않는다. 이미 페어링돼 있으면 botctl이 거부한다(덮으려면 `--force`).
+- **사용자 ID = 사람 계정 ID다**(봇 ID 아님 — 내 프로필 우클릭 → 사용자 ID 복사). 봇 ID를 넣으면
+  페어링은 되지만 채널 메시지가 전부 무시된다(allowFrom 불일치).
+- 토큰 값은 화면에 출력하지 않는다. 페어링 성공 후 `.bot-token` 파일을 **삭제하고 삭제를 확인한다**.
+- 이미 페어링돼 있으면 botctl이 거부한다(덮으려면 `--force`).
 
 ### 6. 기동·연결 판정
 
@@ -98,7 +108,7 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 
 ```bash
 python3 "<이 스킬 폴더>/generator/botctl.py" add --name <이름> --folder <폴더> --session <세션명> --engine codex
-python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token <토큰> --user-id <ID> --channel-id <ID>
+python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token "$(cat <폴더>/.bot-token)" --user-id <ID> --channel-id <ID>
 python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 ```
 
