@@ -114,6 +114,8 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 
 - add = 브리지 인스턴스(.env.<이름>·data-<이름>) + 데몬·TUI plist + **AGENTS.md** 지침 블록
   (전용 채널이라 호명 게이트 off — `TUI_TRIGGER_GATE=off`).
+- **리모트 컨트롤 질문은 생략한다** — claude 전용 개념(claude.ai 세션 진입)이라 codex 엔진
+  기동 명령에는 쓰이지 않는다(botctl이 값을 무시).
 - start = TUI 기동(tui-up.sh, "준비 완료" 확인) + 데몬 bootstrap. 연결 판정은 브리지 로그
   (`<브리지>/logs/daemon-<이름>.log`)의 "로그인:" 줄로 확인해 보고한다.
 - 재시작 리추얼은 동일: "세션 마감하고 재시작해" → tui-restart.sh(웹훅 통지) → "이어서하자".
