@@ -46,6 +46,11 @@ python3 "<이 스킬 폴더>/generator/botctl.py" add --name <이름> --folder <
 지침 블록이 이미 자체 규칙으로 있는 폴더 — 예: 멀티 에이전트 하네스의 오케스트레이터 — 는
 `--no-directive-block`.) 출력을 그대로 보여준다.
 
+usage-coach(대시보드)가 설치돼 있으면 add가 봇 폴더 `.claude/settings.local.json`에
+statusLine을 자동 주입한다(대시보드 클로드 카드의 데이터원 — 미주입 시 카드가 영구 공백,
+2026-08-05 실측). 사용자가 이미 설정한 statusLine은 건드리지 않고, remove가 주입분만 회수한다.
+usage-coach가 없으면(단독 설치) 건너뛴다 — 정상이다.
+
 **프로젝트 MCP 주의**: 폴더에 프로젝트 MCP 서버가 설정돼 있으면(.mcp.json 또는
 프로젝트 설정), 봇 세션이 뜰 때마다 승인 다이얼로그에 걸려 **무인 재시작이 막힌다**.
 이 경우 사용자에게 "이 폴더의 프로젝트 MCP를 자동 허용할까요?"를 확인받고, 동의하면
@@ -73,12 +78,13 @@ add에 `--allow-project-mcp`를 붙인다(`.claude/settings.local.json`에
 사용자 ID·채널 ID만 채팅으로 받고, 토큰은 §4에서 만든 `.bot-token` 파일에서 읽는다:
 
 ```bash
-python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token "$(cat <폴더>/.bot-token)" --user-id <ID> --channel-id <ID>
+python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token-file <폴더>/.bot-token --user-id <ID> --channel-id <ID>
 ```
 
 - **사용자 ID = 사람 계정 ID다**(봇 ID 아님 — 내 프로필 우클릭 → 사용자 ID 복사). 봇 ID를 넣으면
   페어링은 되지만 채널 메시지가 전부 무시된다(allowFrom 불일치).
-- 토큰 값은 화면에 출력하지 않는다. 페어링 성공 후 `.bot-token` 파일을 **삭제하고 삭제를 확인한다**.
+- 토큰 값은 화면에 출력하지 않는다. `--token-file`이면 botctl이 페어링 성공 직후 파일을
+  **직접 삭제**한다("토큰 파일 삭제" 출력으로 확인 — 평문 잔존 방지). 실패 시엔 보존된다.
 - 이미 페어링돼 있으면 botctl이 거부한다(덮으려면 `--force`).
 
 ### 6. 기동·연결 판정
@@ -92,6 +98,16 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 의 최신 `*.jsonl`에서 `Successfully connected` / `Connection failed`를 확인해 결과를 보고한다.
 (기동 직후 파일이 생기기까지 수십 초 걸릴 수 있다 — 잠시 대기 후 재확인.)
 실패면 원인 후보를 안내: 토큰 오입력 / MESSAGE CONTENT INTENT 미설정 / 서버 초대 안 됨.
+
+**실패·미기동 폴백** — 첫 MCP spawn이 로그 파일조차 안 남기고 조용히 죽는 증상이
+실측됐다(2026-08-05, Claude Code 본체 이슈 추정). 로그가 아예 안 생기거나 실패면:
+
+1. **재기동 1회만**: `stop` → `start` (또는 `bot-restart <세션명>`) 후 로그 재확인.
+2. 같은 실패면 재기동을 반복하지 않는다(수렴하지 않는 경우가 실측됨). **예열 복구 1회**:
+   봇 폴더에서 `claude mcp list`로 `plugin:discord:discord`가 `✔ Connected`인지 확인한 뒤
+   다시 재기동 → 로그 재확인.
+3. 그래도 실패면 멈추고 `doctor` 결과와 원인 후보(토큰/인텐트/초대)를 보고한다.
+   시간 경과 후 재기동이 성공한 실측이 있다 — 무한 재시도로 시간을 태우지 말 것.
 
 ### 7. 마무리 안내
 
@@ -108,7 +124,7 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 
 ```bash
 python3 "<이 스킬 폴더>/generator/botctl.py" add --name <이름> --folder <폴더> --session <세션명> --engine codex
-python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token "$(cat <폴더>/.bot-token)" --user-id <ID> --channel-id <ID>
+python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token-file <폴더>/.bot-token --user-id <ID> --channel-id <ID>
 python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 ```
 
@@ -137,4 +153,5 @@ python3 "<이 스킬 폴더>/generator/botctl.py" doctor
 python3 "<이 스킬 폴더>/generator/botctl.py" list
 ```
 
-doctor는 읽기 전용 — bots.json ↔ plist ↔ 지침 블록 ↔ 페어링 ↔ tmux 세션 생존을 대조 보고한다.
+doctor는 읽기 전용 — bots.json ↔ plist ↔ 지침 블록 ↔ 페어링 ↔ tmux 세션 생존 ↔
+MCP 연결(claude 엔진, 최신 로그 기준 — 낡은 성공 로그 오판 방지)을 대조 보고한다.

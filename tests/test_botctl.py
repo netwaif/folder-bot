@@ -220,6 +220,115 @@ def test_codex_pair_fills_env_lines(tmp_path):
     assert r2.returncode != 0 and "tok9" in (bridge / ".env.b").read_text()
 
 
+def _fake_coach(tmp_path):
+    """하네스 clone 위치에 usage-coach statusline 정본을 흉내낸다."""
+    script = tmp_path / ".local/share/discord-harness/repos/usage-coach/scripts/statusline-command.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/bash\n")
+    return script
+
+
+def test_add_injects_statusline_when_coach_present(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    script = _fake_coach(tmp_path)
+    (folder / ".claude").mkdir()
+    (folder / ".claude/settings.local.json").write_text('{"enabledMcpjsonServers": ["gemini"]}')
+    r = run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+            "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    assert r.returncode == 0, r.stderr
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert data["statusLine"] == {"type": "command", "command": f"bash {script}"}
+    assert data["enabledMcpjsonServers"] == ["gemini"]   # 기존 키 보존
+
+
+def test_add_skips_statusline_without_coach(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    p = folder / ".claude/settings.local.json"
+    assert not p.exists()                                # 단독 설치 — 주입 없음
+
+
+def test_add_preserves_user_statusline(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    _fake_coach(tmp_path)
+    (folder / ".claude").mkdir()
+    (folder / ".claude/settings.local.json").write_text(
+        '{"statusLine": {"type": "command", "command": "my-own.sh"}}')
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert data["statusLine"]["command"] == "my-own.sh"  # 사용자 설정 무접촉
+    r = run(tmp_path, "remove", "--name", "b", "--keep-state")
+    assert r.returncode == 0
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert data["statusLine"]["command"] == "my-own.sh"  # 회수 대상 아님
+
+
+def test_remove_recovers_injected_statusline(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    _fake_coach(tmp_path)
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    # 재등록해도 주입 기록이 유지돼야 회수가 성립한다
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    run(tmp_path, "remove", "--name", "b", "--keep-state")
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert "statusLine" not in data
+
+
+def test_pair_token_file_deleted_after_success(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    tok = folder / ".bot-token"; tok.write_text("tok123\n")
+    r = run(tmp_path, "pair", "--name", "b", "--token-file", str(tok),
+            "--user-id", "111", "--channel-id", "222")
+    assert r.returncode == 0, r.stderr
+    assert (folder / ".discord-state/.env").read_text() == "DISCORD_BOT_TOKEN=tok123\n"
+    assert not tok.exists()                              # 평문 잔존 금지
+    assert "tok123" not in r.stdout                      # 토큰 값 화면 미출력
+
+
+def test_pair_token_file_kept_on_failure(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    run(tmp_path, "pair", "--name", "b", "--token", "tok1", "--user-id", "1", "--channel-id", "2")
+    tok = folder / ".bot-token"; tok.write_text("tok2\n")
+    r = run(tmp_path, "pair", "--name", "b", "--token-file", str(tok),
+            "--user-id", "1", "--channel-id", "2")
+    assert r.returncode != 0                             # --force 없이 거부
+    assert tok.exists()                                  # 실패 시 파일 보존
+
+
+def _mcp_log(tmp_path, folder, text):
+    import re
+    mangled = re.sub(r"[/.]", "-", str(folder))
+    d = tmp_path / "Library/Caches/claude-cli-nodejs" / mangled / "mcp-logs-plugin-discord-discord"
+    d.mkdir(parents=True)
+    (d / "2026-08-06.jsonl").write_text(text)
+
+
+def test_doctor_judges_mcp_log(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--no-directive-block")
+    _mcp_log(tmp_path, folder, '{"msg": "Connection failed"}\n')
+    r = run(tmp_path, "doctor")
+    assert "MCP 연결 실패" in r.stdout and r.returncode != 0
+    _mcp_log_dir = tmp_path / "Library/Caches/claude-cli-nodejs"
+    # 최신 파일이 성공이면 OK로 뒤집힌다
+    import re as _re
+    mangled = _re.sub(r"[/.]", "-", str(folder))
+    (_mcp_log_dir / mangled / "mcp-logs-plugin-discord-discord" / "2026-08-07.jsonl").write_text(
+        '{"msg": "Successfully connected"}\n')
+    r2 = run(tmp_path, "doctor")
+    assert "MCP 연결 성공" in r2.stdout
+
+
 def test_codex_doctor_warns_unpaired(tmp_path):
     folder = tmp_path / "w"; folder.mkdir()
     bridge = _fake_bridge(tmp_path)

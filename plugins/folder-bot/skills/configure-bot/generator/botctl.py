@@ -8,6 +8,7 @@ launchctl bootout은 실행하지 않는다 — 파일 생성/삭제 + tmux kill
 import argparse
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -259,6 +260,57 @@ def allow_project_mcp(folder: Path) -> list[str]:
     return [f"프로젝트 MCP 자동 허용 설정: {p}"]
 
 
+def statusline_script() -> Path | None:
+    """usage-coach statusline 정본 탐색 — config 명시 → 하네스 clone 순. 없으면 None(단독 설치)."""
+    cands = []
+    cfg = load_config().get("usage_coach_dir")
+    if cfg:
+        cands.append(Path(cfg).expanduser() / "scripts/statusline-command.sh")
+    cands.append(home() / ".local/share/discord-harness/repos/usage-coach"
+                 / "scripts/statusline-command.sh")
+    for c in cands:
+        if c.is_file():
+            return c
+    return None
+
+
+def write_statusline(bot: dict) -> tuple[list[str], str | None]:
+    """대시보드 클로드 카드 데이터원 — statusLine 훅이 세션 스냅샷을 남긴다(usage-coach 정본).
+
+    미주입 시 카드가 영구 공백(2026-08-05 실측). usage-coach가 없으면(단독 설치) 건너뛰고,
+    사용자가 이미 설정한 statusLine은 건드리지 않는다. 주입한 명령을 반환해 remove가 회수한다."""
+    script = statusline_script()
+    if script is None:
+        return [], None
+    p = Path(bot["folder"]) / ".claude/settings.local.json"
+    data = json.loads(p.read_text()) if p.exists() else {}
+    if "statusLine" in data:
+        return [], None
+    cmd = f"bash {script}"
+    data["statusLine"] = {"type": "command", "command": cmd}
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return [f"대시보드 statusLine 주입: {p}"], cmd
+
+
+def remove_statusline(bot: dict) -> list[str]:
+    """주입 기록과 현재 값이 일치할 때만 statusLine 회수(사용자 변경분 보존)."""
+    sc = bot.get("statusline_cmd")
+    if not sc:
+        return []
+    p = Path(bot["folder"]) / ".claude/settings.local.json"
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return []
+    cur = data.get("statusLine")
+    if not (isinstance(cur, dict) and cur.get("command") == sc):
+        return []
+    del data["statusLine"]
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return [f"statusLine 회수: {p}"]
+
+
 def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
     """add 후 설치 일괄 수행 — 엔진별 스크립트·plist·지침 블록."""
     lines = []
@@ -281,7 +333,10 @@ def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
 
 def cmd_add(a) -> None:
     bots = load_bots()
+    prior = bots.get(a.name) or {}
     entry = {"engine": a.engine, "folder": a.folder, "session": a.session}
+    if "statusline_cmd" in prior:
+        entry["statusline_cmd"] = prior["statusline_cmd"]  # 재등록에도 회수 기록 유지
     if a.engine == "codex":
         entry["bridge_dir"] = a.bridge_dir or load_config().get(
             "codex_bridge_dir", "~/codex-discord")
@@ -295,7 +350,15 @@ def cmd_add(a) -> None:
         entry["autostart"] = False
     bots[a.name] = entry
     save_bots(bots)
-    for line in install_all(resolve_bot(a.name), allow_mcp=a.allow_project_mcp):
+    bot = resolve_bot(a.name)
+    lines = install_all(bot, allow_mcp=a.allow_project_mcp)
+    if bot["engine"] == "claude":
+        sl_lines, injected = write_statusline(bot)
+        lines += sl_lines
+        if injected:
+            entry["statusline_cmd"] = injected
+            save_bots(bots)
+    for line in lines:
         print(line)
     print(f"등록됨: {a.name}")
 
@@ -332,6 +395,8 @@ def cmd_remove(a) -> None:
                 print(f"plist 제거: {p}")
         print(f"제거됨: {a.name} (토큰 파일 보존: {codex_env_path(bot)})")
         return
+    for line in remove_statusline(bot):
+        print(line)
     p = plist_path(bot)
     if p.exists():
         p.unlink()
@@ -342,6 +407,19 @@ def cmd_remove(a) -> None:
 
 def cmd_pair(a) -> None:
     bot = resolve_bot(a.name)
+    if bool(a.token) == bool(a.token_file):
+        sys.exit("오류: --token 또는 --token-file 중 하나만 지정")
+    tok_file = Path(a.token_file).expanduser() if a.token_file else None
+    if tok_file and not tok_file.is_file():
+        sys.exit(f"오류: 토큰 파일 없음: {tok_file}")
+    token = tok_file.read_text().strip() if tok_file else a.token
+
+    def consume_token_file():
+        """페어링 성공 후에만 — 평문 토큰을 디스크에 남기지 않는다."""
+        if tok_file:
+            tok_file.unlink()
+            print(f"토큰 파일 삭제: {tok_file}")
+
     if bot["engine"] == "codex":
         p = codex_env_path(bot)
         if not p.exists():
@@ -349,7 +427,7 @@ def cmd_pair(a) -> None:
         text = p.read_text()
         if "DISCORD_TOKEN=\n" not in text and not a.force:
             sys.exit(f"오류: {p} 토큰 이미 설정됨 — 덮어쓰려면 --force")
-        subst = {"DISCORD_TOKEN": a.token, "ALLOWED_USER_IDS": a.user_id,
+        subst = {"DISCORD_TOKEN": token, "ALLOWED_USER_IDS": a.user_id,
                  "TUI_CHANNEL_ID": a.channel_id, "CHANNEL_IDS": a.channel_id}
         lines = []
         for line in text.splitlines():
@@ -357,6 +435,7 @@ def cmd_pair(a) -> None:
             lines.append(f"{key}={subst[key]}" if key in subst else line)
         p.write_text("\n".join(lines) + "\n")
         p.chmod(0o600)
+        consume_token_file()
         print(f"페어링 완료: {p}")
         return
     st = Path(bot["state_dir"])
@@ -365,12 +444,13 @@ def cmd_pair(a) -> None:
         sys.exit(f"오류: {env} 이미 존재 — 덮어쓰려면 --force")
     st.mkdir(parents=True, exist_ok=True)
     (st / "inbox").mkdir(exist_ok=True)
-    env.write_text(f"DISCORD_BOT_TOKEN={a.token}\n")
+    env.write_text(f"DISCORD_BOT_TOKEN={token}\n")
     env.chmod(0o600)
     access = {"dmPolicy": "allowlist", "allowFrom": [a.user_id],
               "groups": {a.channel_id: {"requireMention": False, "allowFrom": [a.user_id]}},
               "pending": {}}
     (st / "access.json").write_text(json.dumps(access, ensure_ascii=False, indent=2) + "\n")
+    consume_token_file()
     print(f"페어링 완료: {st}")
 
 
@@ -413,6 +493,12 @@ def cmd_stop(a) -> None:
     bot = resolve_bot(a.name)
     subprocess.run([find_tmux(), "kill-session", "-t", bot["session"]], capture_output=True)
     print(f"중지: {bot['session']}")
+
+
+def mcp_log_dir(folder: str) -> Path:
+    """discord 플러그인 MCP 로그 디렉토리 — 폴더 절대경로의 /·. 을 - 로 치환."""
+    return (home() / "Library/Caches/claude-cli-nodejs"
+            / re.sub(r"[/.]", "-", folder) / "mcp-logs-plugin-discord-discord")
 
 
 def cmd_doctor(a) -> None:
@@ -464,6 +550,19 @@ def cmd_doctor(a) -> None:
             env = Path(b["state_dir"]) / ".env"
             if not env.exists():
                 rep("WARN", f"페어링 안 됨(.env 없음): {env}")
+            mcp = mcp_log_dir(b["folder"])
+            logs = sorted(mcp.glob("*.jsonl"),
+                          key=lambda f: (f.stat().st_mtime, f.name)) if mcp.is_dir() else []
+            if logs:
+                # 낡은 성공 로그의 합격 오판 방지 — 최신 파일만 본다(하네스 judge_mcp 계열)
+                text = logs[-1].read_text(errors="ignore")
+                if "Successfully connected" in text:
+                    rep("OK", "MCP 연결 성공(최신 로그 기준)")
+                elif "Connection failed" in text:
+                    rep("FAIL", "MCP 연결 실패(최신 로그) — 토큰 오입력·"
+                                "MESSAGE CONTENT INTENT 미설정·서버 초대 누락 확인")
+                else:
+                    rep("WARN", f"MCP 연결 판정 불가(성공/실패 기록 없음): {logs[-1]}")
         target, _, _ = _directive_target(b)
         md = Path(b["folder"]) / target
         has_block = md.exists() and MARK_START in md.read_text()
@@ -501,7 +600,9 @@ def main() -> None:
 
     pp = sub.add_parser("pair", help="토큰·접근 파일 생성")
     pp.add_argument("--name", required=True)
-    pp.add_argument("--token", required=True)
+    pp.add_argument("--token")
+    pp.add_argument("--token-file",
+                    help="토큰 파일 경로 — 페어링 성공 시 파일을 삭제한다(평문 잔존 방지)")
     pp.add_argument("--user-id", required=True)
     pp.add_argument("--channel-id", required=True)
     pp.add_argument("--force", action="store_true")
