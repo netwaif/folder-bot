@@ -327,6 +327,12 @@ def test_doctor_judges_mcp_log(tmp_path):
         '{"msg": "Successfully connected"}\n')
     r2 = run(tmp_path, "doctor")
     assert "MCP 연결 성공" in r2.stdout
+    # 종료된 세션의 로그는 증거가 아니다 — 성공 기록이 있어도 판정 불가(8/6 합격 오판 실측)
+    (_mcp_log_dir / mangled / "mcp-logs-plugin-discord-discord" / "2026-08-08.jsonl").write_text(
+        '{"msg": "Successfully connected"}\n{"msg": "Sending SIGINT"}\n'
+        '{"msg": "MCP server process exited cleanly"}\n')
+    r3 = run(tmp_path, "doctor")
+    assert "판정 불가" in r3.stdout and "MCP 연결 성공" not in r3.stdout
 
 
 def test_codex_doctor_warns_unpaired(tmp_path):

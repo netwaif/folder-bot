@@ -556,7 +556,13 @@ def cmd_doctor(a) -> None:
             if logs:
                 # 낡은 성공 로그의 합격 오판 방지 — 최신 파일만 본다(하네스 judge_mcp 계열)
                 text = logs[-1].read_text(errors="ignore")
-                if "Successfully connected" in text:
+                # 종료 기록으로 끝난 로그는 이전 세션 것 — 증거로 쓰지 않는다(8/6 양방향
+                # 오판 실측). 로그 주인(sessionId) 기준 구분은 이월.
+                tail = text[-2000:]
+                if "Sending SIGINT" in tail or "exited" in tail:
+                    rep("WARN", "MCP 판정 불가 — 최신 로그가 종료된 세션 것"
+                                "(현 세션 로그 미생성, 기동 직후일 수 있음)")
+                elif "Successfully connected" in text:
                     rep("OK", "MCP 연결 성공(최신 로그 기준)")
                 elif "Connection failed" in text:
                     rep("FAIL", "MCP 연결 실패(최신 로그) — 토큰 오입력·"

@@ -1,6 +1,6 @@
 {
   "name": "folder-bot",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "폴더 전용 디스코드 채널 봇 설치기. bots.json 정본으로 LaunchAgent·기동 직렬화(bot-up)·원격 재시작(bot-restart)·CLAUDE.md 지침 블록을 멱등 관리. 세션 이어가기(SESSION.md)와 짝을 이뤄 '세션 마감하고 재시작해' → '이어서하자' 컨텍스트 리사이클이 어느 폴더에서나 성립한다.",
   "author": { "name": "netwaif" }
 }

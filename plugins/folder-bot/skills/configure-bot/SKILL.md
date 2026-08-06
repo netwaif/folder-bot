@@ -104,8 +104,17 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 
 1. **재기동 1회만**: `stop` → `start` (또는 `bot-restart <세션명>`) 후 로그 재확인.
 2. 같은 실패면 재기동을 반복하지 않는다(수렴하지 않는 경우가 실측됨). **예열 복구 1회**:
-   봇 폴더에서 `claude mcp list`로 `plugin:discord:discord`가 `✔ Connected`인지 확인한 뒤
+   봇 폴더에서 아래 형태로 `plugin:discord:discord`가 `✔ Connected`인지 확인한 뒤
    다시 재기동 → 로그 재확인.
+
+   ```bash
+   DISCORD_STATE_DIR=<폴더>/.discord-state claude mcp list
+   ```
+
+   **`DISCORD_STATE_DIR` 없이 그냥 실행하면 안 된다** — 서버가 전역
+   `~/.claude/channels/discord/.env`를 찾다 `DISCORD_BOT_TOKEN required`로 죽고(폴더봇은
+   100% 실패, 2026-08-06 실측), 그 실패 로그가 MCP 로그 디렉토리에 남아 doctor 판정까지
+   오염시킨다.
 3. 그래도 실패면 멈추고 `doctor` 결과와 원인 후보(토큰/인텐트/초대)를 보고한다.
    시간 경과 후 재기동이 성공한 실측이 있다 — 무한 재시도로 시간을 태우지 말 것.
 
