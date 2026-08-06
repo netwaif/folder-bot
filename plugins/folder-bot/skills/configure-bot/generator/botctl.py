@@ -5,6 +5,8 @@
 비파괴 원칙: SESSION.md는 생성·수정하지 않는다. CLAUDE.md는 마커 블록 append/제거만.
 launchctl bootout은 실행하지 않는다 — 파일 생성/삭제 + tmux kill-session만.
 """
+from __future__ import annotations  # macOS 기본 python3(3.9)에서 `X | None` 표기 크래시 방지 — 8/6 실측
+
 import argparse
 import json
 import os
