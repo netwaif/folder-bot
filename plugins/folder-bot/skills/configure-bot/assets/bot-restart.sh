@@ -3,12 +3,15 @@
 #
 # 문제: 봇이 자기 자신을 죽이면 재기동을 마저 할 수 없다 (respawn-pane -k가 자기 프로세스를 죽임).
 # 해법: 재시작 작업을 tmux 서버에 위탁(run-shell -b)하고 즉시 반환 — pane이 죽어도 스크립트는
-#       tmux 서버 아래에서 살아남아 respawn을 수행한다. 기동 명령은 LaunchAgent plist에서
-#       실시간 추출(단일 정본 유지), 연결 판정은 bot-up.sh와 같은 MCP 로그 감시.
+#       tmux 서버 아래에서 살아남아 respawn을 수행한다. 기동 명령은 macOS: LaunchAgent plist에서
+#       실시간 추출 / 리눅스: systemd 유닛 옆 <세션>.tmux-cmd 사이드카(단일 정본 유지), 연결 판정은
+#       bot-up.sh와 같은 MCP 로그 감시.
 #       결과는 웹훅(선택)으로 통지 — 봇이 죽은 뒤에도 사용자 폰에 성패가 도착한다.
 #
 # 사용: bot-restart.sh <tmux-세션명>   (예: bot-restart.sh orchestrator)
-#       - 대상 봇의 LaunchAgent plist(tmux new-session -s <세션명> ...)가 설치돼 있어야 한다.
+#       - 대상 봇의 LaunchAgent plist(tmux new-session -s <세션명> ...) 또는 리눅스 사이드카
+#         ~/.config/systemd/user/<세션명>.tmux-cmd 가 설치돼 있어야 한다(botctl add가 생성).
+#       - HARNESS_OS(Darwin/Linux)는 테스트 override. BOT_RESTART_DRY_RUN=1이면 기동 명령·로그 경로만 출력.
 #       - 웹훅: $BOT_RESTART_WEBHOOK 또는 ~/.config/usage-coach/discord.json 의 webhook_url. 없으면 생략.
 set -uo pipefail
 
@@ -42,9 +45,15 @@ fi
 # --- 2단계(tmux 서버 아래, pane 사망과 무관하게 진행) ---
 log "=== $NAME 재시작 시작 ==="
 
-# 기동 명령 = LaunchAgent plist에서 추출 (tmux new-session -s <NAME> 의 마지막 인자)
+OS_NAME="${HARNESS_OS:-$(uname -s)}"
+
+# 기동 명령 = macOS: LaunchAgent plist에서 추출 (tmux new-session -s <NAME> 의 마지막 인자)
+#            리눅스: botctl이 남긴 ~/.config/systemd/user/<NAME>.tmux-cmd 사이드카
 CMD=""
-for p in "$HOME/Library/LaunchAgents"/*.plist; do
+if [[ "$OS_NAME" == Linux ]]; then
+  [[ -f "$HOME/.config/systemd/user/$NAME.tmux-cmd" ]] && CMD=$(cat "$HOME/.config/systemd/user/$NAME.tmux-cmd")
+fi
+[[ -n "$CMD" || "$OS_NAME" != Darwin ]] || for p in "$HOME/Library/LaunchAgents"/*.plist; do
   CMD=$(/usr/bin/plutil -extract ProgramArguments json -o - "$p" 2>/dev/null \
     | /usr/bin/python3 -c "
 import json,sys
@@ -55,13 +64,17 @@ if '-s' in a and a[a.index('-s')+1]=='$NAME' and 'new-session' in a: print(a[-1]
   [[ -n "$CMD" ]] && break
 done
 if [[ -z "$CMD" ]]; then
-  log "실패: 세션 '$NAME'의 LaunchAgent plist를 찾지 못함"
+  log "실패: 세션 '$NAME'의 기동 명령(LaunchAgent plist / systemd <세션>.tmux-cmd)을 찾지 못함"
   exit 1
 fi
 
 # 작업폴더(cd 대상) → 이 봇의 discord MCP 로그 경로 (bot-up.sh와 같은 규칙)
 WORKDIR=$(echo "$CMD" | grep -oE "cd [^;&']+" | head -1 | sed 's/^cd //; s/ *$//')
-MCP_LOG_DIR="$HOME/Library/Caches/claude-cli-nodejs/${WORKDIR//[\/.]/-}/mcp-logs-plugin-discord-discord"
+CLAUDE_CACHE="$HOME/Library/Caches/claude-cli-nodejs"; [[ "$OS_NAME" == Linux ]] && CLAUDE_CACHE="$HOME/.cache/claude-cli-nodejs"
+MCP_LOG_DIR="$CLAUDE_CACHE/${WORKDIR//[\/.]/-}/mcp-logs-plugin-discord-discord"
+if [[ "${BOT_RESTART_DRY_RUN:-}" == 1 ]]; then
+  echo "CMD=$CMD"; echo "MCP_LOG_DIR=$MCP_LOG_DIR"; exit 0
+fi
 
 # 웹훅 (없으면 통지 생략) — folder-bot config → usage-coach 순
 WEBHOOK="${BOT_RESTART_WEBHOOK:-}"

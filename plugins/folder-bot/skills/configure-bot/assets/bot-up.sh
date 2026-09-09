@@ -6,7 +6,8 @@
 #       기동 실패하고 재시도가 없어 그 봇은 채널 미연결로 남는다 (2026-07-29 오케 / 2026-07-31 수다 클로드 실측).
 # 해법: 전역 락을 잡은 채 claude를 기동하고, 이 봇의 discord MCP 연결 판정(성공/실패)이 로그에 나타날
 #       때까지 락을 유지한다 — 봇들의 bun install 창이 구조적으로 겹치지 않는다.
-#       macOS에는 flock(1)이 없어 mkdir 원자성으로 락을 구현한다.
+#       macOS에는 flock(1)이 없어 mkdir 원자성으로 락을 구현한다. 리눅스(systemd 유닛 기동)도 동일.
+#       HARNESS_OS(Darwin/Linux)는 테스트 override.
 #
 # 사용: cd <봇 작업폴더> 후  exec bot-up.sh <claude 인자...>
 #       (PATH·DISCORD_STATE_DIR 등 환경은 호출자(plist)가 설정)
@@ -17,6 +18,7 @@ STALE_SEC=600        # 락이 이보다 오래되면 잔존물로 보고 스틸
 ACQUIRE_TIMEOUT=300  # 락 대기 상한 — 초과 시 직렬화 포기하고 그냥 기동
 CONNECT_TIMEOUT=240  # MCP 연결 판정 대기 상한 — 초과 시 락 해제
 
+OS_NAME="${HARNESS_OS:-$(uname -s)}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude || true)}"
 [[ -z "$CLAUDE_BIN" && -x "$HOME/.local/bin/claude" ]] && CLAUDE_BIN="$HOME/.local/bin/claude"
 if [[ -z "$CLAUDE_BIN" || ! -x "$CLAUDE_BIN" ]]; then
@@ -40,7 +42,13 @@ while (( SECONDS < deadline )); do
     log "락 보유자($holder) 사망 — 스틸"
     rm -rf "$LOCK_DIR"; continue
   fi
-  mtime=$(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0)
+  # stat은 BSD(-f %m)/GNU(-c %Y) 문법이 다르다 — GNU에서 -f는 파일시스템 정보를 내놓아
+  # mtime에 "File: …" 문자열이 들어가고 set -u로 즉사한다(WSL2 실측 2026-09-07)
+  if [[ "$OS_NAME" == Linux ]]; then
+    mtime=$(stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0)
+  else
+    mtime=$(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0)
+  fi
   if (( mtime > 0 && $(date +%s) - mtime > STALE_SEC )); then
     log "락이 ${STALE_SEC}초 이상 잔존 — 스틸"
     rm -rf "$LOCK_DIR"; continue
@@ -57,7 +65,8 @@ fi
 
 # --- 연결 판정 감시자: 이 봇의 discord MCP 로그에 성공/실패가 찍히면 락 해제 ---
 if (( acquired )); then
-  MCP_LOG_DIR="$HOME/Library/Caches/claude-cli-nodejs/${PWD//[\/.]/-}/mcp-logs-plugin-discord-discord"
+  CLAUDE_CACHE="$HOME/Library/Caches/claude-cli-nodejs"; [[ "$OS_NAME" == Linux ]] && CLAUDE_CACHE="$HOME/.cache/claude-cli-nodejs"
+  MCP_LOG_DIR="$CLAUDE_CACHE/${PWD//[\/.]/-}/mcp-logs-plugin-discord-discord"
   STAMP=$(mktemp "${TMPDIR:-/tmp}/bot-up-stamp.XXXXXX")
   (
     watch_deadline=$((SECONDS + CONNECT_TIMEOUT))

@@ -343,3 +343,138 @@ def test_codex_doctor_warns_unpaired(tmp_path):
         "--engine", "codex", "--bridge-dir", str(bridge), "--no-directive-block")
     r = run(tmp_path, "doctor")
     assert "토큰 없음" in r.stdout and "데몬" in r.stdout
+
+
+# ---------------------------------------------------------------- 리눅스(systemd) 분기
+
+def run_linux(env_home, *args):
+    env = dict(os.environ, HOME=str(env_home), HARNESS_OS="Linux")
+    return subprocess.run([sys.executable, str(BOTCTL), *args],
+                          capture_output=True, text=True, env=env)
+
+
+def test_guard_shim_blocks_real_calls(tmp_path):
+    # conftest 안전장치 자체 검증: 실호출은 exit 99 — 표식은 여기서 바로 지워 픽스처 단언을 통과시킨다
+    r = subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, text=True)
+    assert r.returncode == 99 and "BLOCKED" in r.stderr
+    marker = Path(os.environ["PATH"].split(os.pathsep)[0]) / "CALLED"
+    assert "systemctl --user daemon-reload" in marker.read_text()
+    marker.unlink()
+
+
+def test_linux_add_writes_unit_and_sidecars(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    r = run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder),
+                  "--session", "b-bot", "--no-directive-block")
+    assert r.returncode == 0, r.stderr
+    d = tmp_path / ".config/systemd/user"
+    unit = d / "com.folder-bot.b.service"
+    assert unit.exists() and not (tmp_path / "Library/LaunchAgents").exists()
+    text = unit.read_text()
+    assert "# folder-bot: name=b session=b-bot folder=" + str(folder) in text
+    assert "Type=oneshot" in text and "RemainAfterExit=yes" in text and "KillMode=process" in text
+    assert f"ExecStart=/bin/bash {d}/b-bot.up.sh" in text
+    assert "kill-session -t b-bot" in text and "WantedBy=default.target" in text
+    cmd = (d / "b-bot.tmux-cmd").read_text()
+    assert cmd.startswith("/bin/bash -lc '") and f"cd {folder}" in cmd
+    assert "DISCORD_STATE_DIR=" in cmd and "/.local/bin/bot-up -n b-bot --remote-control b-bot" in cmd
+    up = d / "b-bot.up.sh"
+    assert up.stat().st_mode & 0o111 and f'new-session -d -s b-bot "$(cat "{d}/b-bot.tmux-cmd")"' in up.read_text()
+    assert "유닛 생성" in r.stdout
+    # 멱등: 재실행은 무출력
+    r2 = run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder),
+                   "--session", "b-bot", "--no-directive-block")
+    assert "유닛 생성" not in r2.stdout
+
+
+def test_linux_no_autostart_removes_unit(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+              "--no-directive-block")
+    r = run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+                  "--no-directive-block", "--no-autostart")
+    assert r.returncode == 0, r.stderr
+    d = tmp_path / ".config/systemd/user"
+    assert not list(d.iterdir()), list(d.iterdir())
+
+
+def test_linux_remove_leaves_nothing(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+              "--no-directive-block")
+    r = run_linux(tmp_path, "remove", "--name", "b")
+    assert r.returncode == 0, r.stderr
+    d = tmp_path / ".config/systemd/user"
+    assert not list(d.iterdir()) and "유닛 제거" in r.stdout
+
+
+def test_linux_start_dry_run_uses_bash(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+              "--no-directive-block")
+    r = run_linux(tmp_path, "start", "--name", "b", "--dry-run")
+    assert r.returncode == 0 and "systemctl --user start com.folder-bot.b.service" in r.stdout
+    r = run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+                  "--no-directive-block", "--no-autostart")
+    r = run_linux(tmp_path, "start", "--name", "b", "--dry-run")
+    assert "new-session -d -s b-bot /bin/bash -lc" in r.stdout and "/bin/zsh" not in r.stdout
+
+
+def test_linux_doctor_checks_unit_and_cache_log(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+              "--no-directive-block")
+    (tmp_path / ".config/systemd/user/com.folder-bot.b.service").unlink()
+    r = run_linux(tmp_path, "doctor", "--name", "b")
+    assert r.returncode == 1 and "유닛 없음" in r.stdout
+    run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+              "--no-directive-block")
+    mcp = (tmp_path / ".cache/claude-cli-nodejs" / str(folder).replace("/", "-").replace(".", "-")
+           / "mcp-logs-plugin-discord-discord")
+    mcp.mkdir(parents=True)
+    (mcp / "a.jsonl").write_text('{"m":"Successfully connected (transport: stdio) in 9ms"}\n')
+    r = run_linux(tmp_path, "doctor", "--name", "b")
+    assert "MCP 연결 성공" in r.stdout and "유닛 없음" not in r.stdout
+
+
+def test_linux_codex_add_writes_units(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    bridge = _fake_bridge(tmp_path)
+    r = run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+                  "--engine", "codex", "--bridge-dir", str(bridge))
+    assert r.returncode == 0, r.stderr
+    d = tmp_path / ".config/systemd/user"
+    daemon = (d / "com.codex-discord.b.service").read_text()
+    assert "Type=simple" in daemon and "Restart=always" in daemon
+    assert f"--env-file=.env.b src/index.mjs" in daemon and f"WorkingDirectory={bridge}" in daemon
+    tui = (d / "com.codex-discord.b-tui.service").read_text()
+    assert "Type=oneshot" in tui and "KillMode=process" in tui
+    assert f"ExecStart=/bin/bash {bridge}/scripts/tui-up.sh .env.b" in tui
+    assert not (tmp_path / "Library/LaunchAgents").exists()
+    r = run_linux(tmp_path, "remove", "--name", "b")
+    assert r.returncode == 0, r.stderr
+    assert not list(d.iterdir())
+
+
+def test_bot_scripts_syntax_and_linux_branches():
+    assets = BOTCTL.parent.parent / "assets"
+    for s in ("bot-up.sh", "bot-restart.sh"):
+        r = subprocess.run(["bash", "-n", str(assets / s)], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+
+def test_bot_restart_reads_sidecar_on_linux(tmp_path):
+    d = tmp_path / ".config/systemd/user"; d.mkdir(parents=True)
+    (d / "b-bot.tmux-cmd").write_text("/bin/bash -lc 'cd /srv/w; exec bot-up -n b-bot'\n")
+    env = dict(os.environ, HOME=str(tmp_path), HARNESS_OS="Linux", BOT_RESTART_DETACHED="1",
+               BOT_RESTART_DRY_RUN="1", BOT_RESTART_LOG=str(tmp_path / "r.log"))
+    r = subprocess.run(["bash", str(BOTCTL.parent.parent / "assets/bot-restart.sh"), "b-bot"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "CMD=/bin/bash -lc 'cd /srv/w; exec bot-up -n b-bot'" in r.stdout
+    assert f"MCP_LOG_DIR={tmp_path}/.cache/claude-cli-nodejs/-srv-w/mcp-logs-plugin-discord-discord" in r.stdout
+    # 사이드카가 없으면 plist 탐색 없이 실패 메시지에 .tmux-cmd를 안내
+    (d / "b-bot.tmux-cmd").unlink()
+    r = subprocess.run(["bash", str(BOTCTL.parent.parent / "assets/bot-restart.sh"), "b-bot"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 1 and ".tmux-cmd" in r.stdout

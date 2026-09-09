@@ -4,6 +4,9 @@
 경로는 전부 HOME 환경변수 기준(테스트가 HOME을 tmpdir로 돌린다).
 비파괴 원칙: SESSION.md는 생성·수정하지 않는다. CLAUDE.md는 마커 블록 append/제거만.
 launchctl bootout은 실행하지 않는다 — 파일 생성/삭제 + tmux kill-session만.
+OS 분기: macOS=LaunchAgent plist, 리눅스(VPS·WSL2)=systemd 사용자 유닛(하네스 6차 2026-09-07 패턴).
+  리눅스 유닛은 com.folder-bot.<이름>.service(라벨 동일 — agentlayer wiring 매칭용) +
+  <세션>.tmux-cmd·<세션>.up.sh 사이드카(bot-restart.sh·agentlayer가 읽음).
 """
 from __future__ import annotations  # macOS 기본 python3(3.9)에서 `X | None` 표기 크래시 방지 — 8/6 실측
 
@@ -21,6 +24,57 @@ ASSETS = Path(__file__).resolve().parent.parent / "assets"
 
 def home() -> Path:
     return Path(os.environ["HOME"])
+
+
+def host_os() -> str:
+    """'darwin' | 'linux'. HARNESS_OS(Darwin/Linux)는 테스트 override — 정본 셸 스크립트와 같은 규약."""
+    o = os.environ.get("HARNESS_OS", "").strip().lower()
+    if o:
+        return o
+    return "darwin" if sys.platform == "darwin" else ("linux" if sys.platform.startswith("linux") else sys.platform)
+
+
+def is_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+def service_dir() -> Path:
+    return home() / ("Library/LaunchAgents" if host_os() == "darwin" else ".config/systemd/user")
+
+
+def unit_name(label: str) -> str:
+    return f"{label}.service"
+
+
+def systemctl_user(*args) -> None:
+    """systemctl --user 호출. HARNESS_FAKE_SYSTEMCTL=1이면 무접촉(테스트)."""
+    import subprocess
+    if os.environ.get("HARNESS_FAKE_SYSTEMCTL"):
+        return
+    subprocess.run(["systemctl", "--user", *args], capture_output=True)
+
+
+def enable_linger() -> None:
+    """VPS: 로그아웃·부팅 뒤에도 사용자 유닛이 살게(실패 무시 — WSL2 등 권한 없는 환경)."""
+    import subprocess
+    if os.environ.get("HARNESS_FAKE_SYSTEMCTL"):
+        return
+    subprocess.run(["loginctl", "enable-linger", os.environ.get("USER", "")], capture_output=True)
+
+
+def systemd_user_state() -> str:
+    """리눅스 systemd --user 상태('running'/'degraded'면 정상). 없으면 ''."""
+    import subprocess
+    if os.environ.get("HARNESS_FAKE_SYSTEMCTL"):
+        return "running"
+    try:
+        r = subprocess.run(["systemctl", "--user", "is-system-running"], capture_output=True, text=True)
+        return (r.stdout or r.stderr).strip()
+    except FileNotFoundError:
+        return ""
 
 
 def config_dir() -> Path:
@@ -88,7 +142,7 @@ def find_tmux() -> str:
     for c in (shutil.which("tmux"), "/opt/homebrew/bin/tmux", "/usr/local/bin/tmux"):
         if c and Path(c).exists():
             return c
-    sys.exit("오류: tmux를 찾을 수 없음 — brew install tmux")
+    sys.exit("오류: tmux를 찾을 수 없음 — " + ("apt install tmux" if host_os() == "linux" else "brew install tmux"))
 
 
 def build_cmd(bot: dict) -> str:
@@ -102,15 +156,80 @@ def build_cmd(bot: dict) -> str:
         flags = f" -n {bot['session']} --remote-control {bot['remote_control']}"
     parts.append(f"exec {home()}/.local/bin/bot-up{flags}"
                  " --channels plugin:discord@claude-plugins-official")
-    return "/bin/zsh -lc '" + "; ".join(parts) + "'"
+    shell = "/bin/bash" if host_os() == "linux" else "/bin/zsh"   # 리눅스는 zsh가 없을 수 있다
+    return shell + " -lc '" + "; ".join(parts) + "'"
 
 
 def plist_path(bot: dict) -> Path:
-    return home() / f"Library/LaunchAgents/com.folder-bot.{bot['name']}.plist"
+    """자동 기동 정의 파일 — macOS plist / 리눅스 systemd 유닛(이름은 호환용)."""
+    label = f"com.folder-bot.{bot['name']}"
+    if host_os() == "linux":
+        return service_dir() / unit_name(label)
+    return service_dir() / f"{label}.plist"
+
+
+def sidecar_paths(session: str) -> tuple[Path, Path]:
+    """리눅스 tmux 유닛 사이드카: <세션>.tmux-cmd(세션 명령 원문)·<세션>.up.sh(유닛이 부르는 기동 스크립트)."""
+    d = service_dir()
+    return d / f"{session}.tmux-cmd", d / f"{session}.up.sh"
+
+
+def write_tmux_unit(label: str, session: str, description: str, cmd: str, extra_unit: str = "") -> bool:
+    """리눅스: tmux 세션을 띄우는 oneshot 유닛 + 사이드카. KillMode=process라 stop 때 공유 tmux 서버를
+    죽이지 않는다(다른 봇 세션 보호). 반환 = 유닛 본문이 새로 쓰였는지."""
+    d = service_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    tmux = find_tmux()
+    cmd_file, up = sidecar_paths(session)
+    unit = d / unit_name(label)
+    cmd_file.write_text(cmd + "\n")
+    up.write_text(f'#!/bin/bash\nexec "{tmux}" new-session -d -s {session} "$(cat "{cmd_file}")"\n')
+    up.chmod(0o755)
+    body = (f"# {description}\n[Unit]\nDescription={label} (tmux 세션 {session})\n"
+            "After=network-online.target\n\n"
+            "[Service]\nType=oneshot\nRemainAfterExit=yes\nKillMode=process\n"
+            f"ExecStart=/bin/bash {up}\nExecStop={tmux} kill-session -t {session}\n{extra_unit}\n"
+            "[Install]\nWantedBy=default.target\n")
+    changed = not (unit.exists() and unit.read_text() == body)
+    unit.write_text(body)
+    systemctl_user("daemon-reload")
+    systemctl_user("enable", "--now", unit.name)
+    enable_linger()
+    return changed
+
+
+def remove_units(labels: list[str], sessions: list[str], stop: bool) -> list[str]:
+    """리눅스: 유닛 disable(+stop) → 유닛·사이드카 삭제 → daemon-reload. 잔존 0."""
+    out = []
+    for label in labels:
+        u = service_dir() / unit_name(label)
+        if u.exists():
+            systemctl_user("disable", *(["--now"] if stop else []), u.name)
+            u.unlink()
+            out.append(f"유닛 제거: {u}")
+    for sess in sessions:
+        for q in sidecar_paths(sess):
+            if q.exists():
+                q.unlink()
+    if out:
+        systemctl_user("daemon-reload")
+    return out
+
+
+def write_unit(bot: dict) -> list[str]:
+    label = f"com.folder-bot.{bot['name']}"
+    if not bot["autostart"]:
+        return [f"{line}(autostart off)" for line in remove_units([label], [bot["session"]], stop=False)]
+    desc = f"folder-bot: name={bot['name']} session={bot['session']} folder={bot['folder']}"
+    if write_tmux_unit(label, bot["session"], desc, build_cmd(bot)):
+        return [f"유닛 생성: {plist_path(bot)} (systemd --user, 부팅 자동 기동 — WSL2는 우분투가 켜져 있는 동안)"]
+    return []
 
 
 def write_plist(bot: dict) -> list[str]:
     import plistlib
+    if host_os() == "linux":
+        return write_unit(bot)
     p = plist_path(bot)
     if not bot["autostart"]:
         if p.exists():
@@ -211,8 +330,55 @@ def write_codex_env(bot: dict) -> list[str]:
     return [f"브리지 인스턴스 생성: {p} (토큰·채널은 pair에서)"]
 
 
+def codex_labels(bot: dict) -> tuple[str, str]:
+    return f"com.codex-discord.{bot['name']}", f"com.codex-discord.{bot['name']}-tui"
+
+
+def write_codex_units(bot: dict) -> list[str]:
+    """리눅스: 데몬 = node 상주(simple, Restart=always ↔ launchd KeepAlive), TUI = tmux 세션 oneshot.
+    codex-discord scripts/install.sh 리눅스 분기와 동형."""
+    daemon_l, tui_l = codex_labels(bot)
+    if not bot["autostart"]:
+        return [f"{line}(autostart off)" for line in
+                remove_units([daemon_l, tui_l], [bot["session"]], stop=False)]
+    node = find_node()
+    d = service_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    path_env = f"{Path(node).parent}:/usr/local/bin:/usr/bin:/bin"
+    bd = bot["bridge_dir"]
+    Path(bd, "logs").mkdir(exist_ok=True)
+    out = []
+    daemon_body = (f"# folder-bot codex daemon: name={bot['name']} folder={bot['folder']}\n"
+                   f"[Unit]\nDescription={daemon_l} (Discord ↔ codex 브리지)\nAfter=network-online.target\n\n"
+                   f"[Service]\nType=simple\nWorkingDirectory={bd}\nEnvironment=\"PATH={path_env}\"\n"
+                   f"ExecStart={node} --env-file=.env.{bot['name']} src/index.mjs\nRestart=always\nRestartSec=15\n"
+                   f"StandardOutput=append:{bd}/logs/daemon-{bot['name']}.log\n"
+                   f"StandardError=append:{bd}/logs/daemon-{bot['name']}.log\n\n"
+                   "[Install]\nWantedBy=default.target\n")
+    tui_body = (f"# folder-bot codex tui: name={bot['name']} session={bot['session']} folder={bot['folder']}\n"
+                f"[Unit]\nDescription={tui_l} (codex TUI tmux 세션 {bot['session']})\nAfter=network-online.target\n\n"
+                f"[Service]\nType=oneshot\nRemainAfterExit=yes\nKillMode=process\nWorkingDirectory={bd}\n"
+                f"Environment=\"PATH={path_env}\"\nExecStart=/bin/bash {bd}/scripts/tui-up.sh .env.{bot['name']}\n"
+                f"ExecStop={find_tmux()} kill-session -t {bot['session']}\n"
+                f"StandardOutput=append:{bd}/logs/tui-up-{bot['name']}.log\n"
+                f"StandardError=append:{bd}/logs/tui-up-{bot['name']}.log\n\n"
+                "[Install]\nWantedBy=default.target\n")
+    for label, body in ((daemon_l, daemon_body), (tui_l, tui_body)):
+        u = d / unit_name(label)
+        if not (u.exists() and u.read_text() == body):
+            u.write_text(body)
+            out.append(f"유닛 생성: {u}")
+    systemctl_user("daemon-reload")
+    systemctl_user("enable", "--now", unit_name(tui_l))
+    systemctl_user("enable", "--now", unit_name(daemon_l))
+    enable_linger()
+    return out
+
+
 def write_codex_plists(bot: dict) -> list[str]:
     import plistlib
+    if host_os() == "linux":
+        return write_codex_units(bot)
     out = []
     la = home() / "Library/LaunchAgents"
     daemon_p = la / f"com.codex-discord.{bot['name']}.plist"
@@ -382,6 +548,15 @@ def cmd_remove(a) -> None:
     save_bots(bots)
     for line in remove_block(bot):
         print(line)
+    if bot["engine"] == "codex" and host_os() == "linux":
+        daemon_l, tui_l = codex_labels(bot)
+        for line in remove_units([daemon_l], [], stop=True):     # 데몬은 Restart=always라 내리고 지운다
+            print(line)
+        subprocess.run([find_tmux(), "kill-session", "-t", bot["session"]], capture_output=True)
+        for line in remove_units([tui_l], [bot["session"]], stop=False):
+            print(line)
+        print(f"제거됨: {a.name} (토큰 파일 보존: {codex_env_path(bot)})")
+        return
     if bot["engine"] == "codex":
         # 데몬은 node 직속 job이라 bootout 안전(tmux 서버를 띄우는 job이 아님).
         # KeepAlive라 파일만 지우면 되살아나므로 내리고 지운다. TUI는 kill-session.
@@ -399,6 +574,10 @@ def cmd_remove(a) -> None:
         return
     for line in remove_statusline(bot):
         print(line)
+    if host_os() == "linux":
+        # disable만(--now 없이) — 세션 종료는 stop 명령의 몫(macOS remove와 동형: 파일만 걷는다)
+        for line in remove_units([f"com.folder-bot.{bot['name']}"], [bot["session"]], stop=False):
+            print(line)
     p = plist_path(bot)
     if p.exists():
         p.unlink()
@@ -470,6 +649,11 @@ def cmd_start(a) -> None:
         print(r.stdout.strip())
         if r.returncode != 0:
             sys.exit(f"오류: TUI 기동 실패 — {bot['bridge_dir']}/logs 확인")
+        if host_os() == "linux":
+            daemon_l, _ = codex_labels(bot)
+            systemctl_user("start", unit_name(daemon_l))
+            print(f"데몬 기동: {daemon_l} (systemd --user)")
+            return
         uid = os.getuid()
         label = f"com.codex-discord.{bot['name']}"
         if subprocess.run(["launchctl", "print", f"gui/{uid}/{label}"],
@@ -479,34 +663,46 @@ def cmd_start(a) -> None:
             print(f"데몬 기동: {label}")
         return
     argv = [tmux, "new-session", "-d", "-s", bot["session"], build_cmd(bot)]
+    unit = plist_path(bot) if host_os() == "linux" and bot["autostart"] else None
     if a.dry_run:
-        print(" ".join(argv))
+        print(f"systemctl --user start {unit.name}" if unit and unit.exists() else " ".join(argv))
         return
     if subprocess.run([tmux, "has-session", "-t", bot["session"]],
                       capture_output=True).returncode == 0:
         print(f"이미 실행 중: {bot['session']}")
         return
-    subprocess.run(argv, check=True)
+    if unit and unit.exists() and not os.environ.get("HARNESS_FAKE_SYSTEMCTL"):
+        # 유닛 경유 기동 — systemd가 세션 소유를 알아야 재부팅·stop이 일관된다
+        systemctl_user("start", unit.name)
+    else:
+        subprocess.run(argv, check=True)
     print(f"기동: {bot['session']} — 연결 판정은 MCP 로그(bot-up이 감시)")
 
 
 def cmd_stop(a) -> None:
     import subprocess
     bot = resolve_bot(a.name)
+    if host_os() == "linux" and bot["engine"] == "claude" and plist_path(bot).exists():
+        systemctl_user("stop", plist_path(bot).name)   # ExecStop = kill-session
     subprocess.run([find_tmux(), "kill-session", "-t", bot["session"]], capture_output=True)
     print(f"중지: {bot['session']}")
 
 
 def mcp_log_dir(folder: str) -> Path:
     """discord 플러그인 MCP 로그 디렉토리 — 폴더 절대경로의 /·. 을 - 로 치환."""
-    return (home() / "Library/Caches/claude-cli-nodejs"
-            / re.sub(r"[/.]", "-", folder) / "mcp-logs-plugin-discord-discord")
+    cache = "Library/Caches/claude-cli-nodejs" if host_os() == "darwin" else ".cache/claude-cli-nodejs"
+    return home() / cache / re.sub(r"[/.]", "-", folder) / "mcp-logs-plugin-discord-discord"
 
 
 def cmd_doctor(a) -> None:
     import subprocess
     fails = 0
     names = [a.name] if a.name else list(load_bots())
+    if host_os() == "linux" and names:
+        st = systemd_user_state()
+        if st not in ("running", "degraded"):
+            print(f"[WARN] systemd --user: {st or '없음'} — 자동 기동 불가"
+                  + (" (WSL2: /etc/wsl.conf에 [boot] systemd=true, PowerShell에서 wsl --shutdown 뒤 다시)" if is_wsl() else ""))
     for name in names:
         b = resolve_bot(name)
 
@@ -518,7 +714,11 @@ def cmd_doctor(a) -> None:
 
         if b["engine"] == "codex":
             la = home() / "Library/LaunchAgents"
-            if b["autostart"]:
+            if b["autostart"] and host_os() == "linux":
+                for label in codex_labels(b):
+                    if not (service_dir() / unit_name(label)).exists():
+                        rep("FAIL", f"유닛 없음: {service_dir() / unit_name(label)}")
+            elif b["autostart"]:
                 for p in (la / f"com.codex-discord.{b['name']}.plist",
                           la / f"com.codex-discord.{b['name']}-tui.plist"):
                     if not p.exists():
@@ -538,7 +738,7 @@ def cmd_doctor(a) -> None:
         else:
             p = plist_path(b)
             if b["autostart"] and not p.exists():
-                rep("FAIL", f"plist 없음: {p}")
+                rep("FAIL", f"{'유닛' if host_os() == 'linux' else 'plist'} 없음: {p}")
             trusted = False
             try:
                 proj = json.loads((home() / ".claude.json").read_text())

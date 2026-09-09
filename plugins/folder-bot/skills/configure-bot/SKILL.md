@@ -16,9 +16,14 @@ CLAUDE.md는 botctl이 마커 블록(`<!-- store:discord-bot:start/end -->`)만 
 
 ### 1. 전제 점검
 
-- `uname` = Darwin(macOS)인지. 아니면 "현재 macOS만 검증됨(리눅스는 systemd로 대체 가능하나 수동)"을 안내하고 중단.
+- OS: `uname -s` = Darwin(macOS)이거나, Linux면 `systemctl --user is-system-running`이 `running`/`degraded`.
+  리눅스인데 systemd --user가 없으면 중단하고 안내: WSL2는 `/etc/wsl.conf`에 `[boot]` `systemd=true`를
+  넣고 PowerShell에서 `wsl --shutdown` 뒤 다시 열기 / 도커 컨테이너 등 systemd 없는 환경은 미지원.
+  WSL2(`/proc/version`에 microsoft)면 한 줄 고지: "봇은 우분투가 켜져 있는 동안만 산다 — 터미널을
+  하나 열어 두거나, 24시간 운용은 VPS 권장". 자동 기동은 macOS=LaunchAgent plist,
+  리눅스=systemd 사용자 유닛 `~/.config/systemd/user/com.folder-bot.<이름>.service`(botctl이 고른다).
 - discord 공식 플러그인: `~/.claude/plugins/cache/claude-plugins-official/discord/` 존재 확인. 없으면 `/plugin`에서 discord 플러그인 설치 안내 후 중단.
-- tmux: `command -v tmux || ls /opt/homebrew/bin/tmux /usr/local/bin/tmux`. 없으면 `brew install tmux` 안내 후 중단.
+- tmux: `command -v tmux || ls /opt/homebrew/bin/tmux /usr/local/bin/tmux`. 없으면 `brew install tmux`(리눅스 `apt install tmux`) 안내 후 중단.
 - **워크스페이스 신뢰**: 대상 폴더가 현재 폴더면 이미 신뢰 수락된 상태다(사용자가 열면서 수락).
   **다른 폴더를 원격 설치하는 경우** `~/.claude.json`의 `projects.<폴더>.hasTrustDialogAccepted`를
   읽어(읽기 전용) false·부재면 안내한다: "그 폴더에서 claude를 한 번 열어 신뢰를 수락해야
@@ -64,6 +69,8 @@ add에 `--allow-project-mcp`를 붙인다(`.claude/settings.local.json`에
 2. **Bot** 탭 → **Reset Token** → 토큰 복사(한 번만 보임).
    **복사한 토큰은 채팅에 붙여넣지 않게 안내한다** — 대상 폴더에 파일로 저장하게 한다:
    `pbpaste > .bot-token && chmod 600 .bot-token` (클립보드에서 바로 파일로 — 셸 히스토리에도 안 남는다)
+   리눅스 대체: WSL2 `powershell.exe -c Get-Clipboard | tr -d '\r' > .bot-token` / 데스크톱 `xclip -o` 또는
+   `wl-paste` / VPS(ssh) `cat > .bot-token` 뒤 붙여넣고 Enter·Ctrl-D — 이어서 `chmod 600 .bot-token`.
 3. 같은 화면 Privileged Gateway Intents에서 **MESSAGE CONTENT INTENT** 켜기 → Save
 4. **OAuth2 → URL Generator**: scope `bot` 체크, Bot Permissions에서
    View Channels / Send Messages / Read Message History / Embed Links / Attach Files 체크
@@ -137,7 +144,7 @@ python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token-f
 python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 ```
 
-- add = 브리지 인스턴스(.env.<이름>·data-<이름>) + 데몬·TUI plist + **AGENTS.md** 지침 블록
+- add = 브리지 인스턴스(.env.<이름>·data-<이름>) + 데몬·TUI plist(리눅스: systemd 유닛) + **AGENTS.md** 지침 블록
   (전용 채널이라 호명 게이트 off — `TUI_TRIGGER_GATE=off`).
 - **리모트 컨트롤 질문은 생략한다** — claude 전용 개념(claude.ai 세션 진입)이라 codex 엔진
   기동 명령에는 쓰이지 않는다(botctl이 값을 무시).
@@ -154,6 +161,7 @@ python3 "<이 스킬 폴더>/generator/botctl.py" remove --name <이름>
 ```
 
 페어링 파일(.discord-state)은 보존된다(재추가 대비). launchctl bootout은 쓰지 않는다.
+리눅스는 유닛을 `disable`하고 유닛·사이드카(`<세션>.tmux-cmd`·`<세션>.up.sh`)를 지운다 — 잔존 0.
 
 ## 점검
 
@@ -162,5 +170,5 @@ python3 "<이 스킬 폴더>/generator/botctl.py" doctor
 python3 "<이 스킬 폴더>/generator/botctl.py" list
 ```
 
-doctor는 읽기 전용 — bots.json ↔ plist ↔ 지침 블록 ↔ 페어링 ↔ tmux 세션 생존 ↔
+doctor는 읽기 전용 — bots.json ↔ plist(리눅스: 유닛, systemd --user 상태) ↔ 지침 블록 ↔ 페어링 ↔ tmux 세션 생존 ↔
 MCP 연결(claude 엔진, 최신 로그 기준 — 낡은 성공 로그 오판 방지)을 대조 보고한다.
