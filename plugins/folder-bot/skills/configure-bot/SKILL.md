@@ -17,7 +17,9 @@ CLAUDE.md는 botctl이 마커 블록(`<!-- store:discord-bot:start/end -->`)만 
 ### 1. 전제 점검
 
 - OS: `uname -s` = Darwin(macOS)이거나, Linux면 `systemctl --user is-system-running`이 `running`/`degraded`.
-  리눅스인데 systemd --user가 없으면 중단하고 안내: WSL2는 `/etc/wsl.conf`에 `[boot]` `systemd=true`를
+  리눅스인데 `Failed to connect to bus`면 먼저 `sudo systemctl restart user@$(id -u)` 한 번(WSL2에서
+  WSLg가 `/run/user/<uid>`를 덮어 버스 소켓이 가려지는 흔한 경우 — 이걸로 바로 복구, 마운트는 건드리지
+  말 것). 그래도 없으면 중단하고 안내: WSL2는 `/etc/wsl.conf`에 `[boot]` `systemd=true`를
   넣고 PowerShell에서 `wsl --shutdown` 뒤 다시 열기 / 도커 컨테이너 등 systemd 없는 환경은 미지원.
   WSL2(`/proc/version`에 microsoft)면 한 줄 고지: "봇은 우분투가 켜져 있는 동안만 산다 — 터미널을
   하나 열어 두거나, 24시간 운용은 VPS 권장". 자동 기동은 macOS=LaunchAgent plist,

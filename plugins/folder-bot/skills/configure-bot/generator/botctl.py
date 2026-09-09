@@ -193,7 +193,9 @@ def write_tmux_unit(label: str, session: str, description: str, cmd: str, extra_
     changed = not (unit.exists() and unit.read_text() == body)
     unit.write_text(body)
     systemctl_user("daemon-reload")
-    systemctl_user("enable", "--now", unit.name)
+    # enable만 — 첫 기동은 start 명령의 몫(macOS plist와 동형). --now로 띄우면 페어링 전에
+    # 자격증명 없는 세션이 먼저 떠서 "이미 실행 중"만 찍힌다(WSL2 실측 2026-09-10).
+    systemctl_user("enable", unit.name)
     enable_linger()
     return changed
 
@@ -286,7 +288,12 @@ def remove_block(bot: dict) -> list[str]:
         return []
     pre, rest = cur.split(MARK_START, 1)
     _, post = rest.split(MARK_END, 1)
-    md.write_text(pre.rstrip("\n") + ("\n" if pre.strip() else "") + post.lstrip("\n"))
+    rest = pre.rstrip("\n") + ("\n" if pre.strip() else "") + post.lstrip("\n")
+    if not rest.strip():
+        # 블록만 있던 파일(원래 없던 폴더에 add가 만든 것) — 빈 파일을 남기지 않는다
+        md.unlink()
+        return [f"{target} 지침 블록 제거 후 빈 파일 삭제: {md}"]
+    md.write_text(rest)
     return [f"{target} 지침 블록 제거: {md}"]
 
 

@@ -478,3 +478,13 @@ def test_bot_restart_reads_sidecar_on_linux(tmp_path):
     r = subprocess.run(["bash", str(BOTCTL.parent.parent / "assets/bot-restart.sh"), "b-bot"],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 1 and ".tmux-cmd" in r.stdout
+
+
+def test_remove_block_deletes_file_it_created(tmp_path):
+    # 원래 CLAUDE.md가 없던 폴더: add가 블록만 든 파일을 만들고, remove 뒤 0바이트 빈 파일을 남기지 않는다
+    folder = tmp_path / "w"; folder.mkdir()
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot")
+    assert (folder / "CLAUDE.md").exists()
+    r = run(tmp_path, "remove", "--name", "b")
+    assert r.returncode == 0, r.stderr
+    assert not (folder / "CLAUDE.md").exists() and "빈 파일 삭제" in r.stdout
