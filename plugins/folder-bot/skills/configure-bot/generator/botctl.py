@@ -49,20 +49,32 @@ def unit_name(label: str) -> str:
     return f"{label}.service"
 
 
+def has_systemd() -> bool:
+    """systemctl 바이너리 존재 여부. 없는 환경(도커 컨테이너 등)은 유닛 없이 사이드카만 남긴다 —
+    자동 기동 없음, 재기동은 외부 몫(bot-restart·호스트 감시자)."""
+    return bool(os.environ.get("HARNESS_FAKE_SYSTEMCTL")) or shutil.which("systemctl") is not None
+
+
 def systemctl_user(*args) -> None:
-    """systemctl --user 호출. HARNESS_FAKE_SYSTEMCTL=1이면 무접촉(테스트)."""
+    """systemctl --user 호출. HARNESS_FAKE_SYSTEMCTL=1이면 무접촉(테스트). 바이너리 없으면 WARN 후 건너뜀."""
     import subprocess
     if os.environ.get("HARNESS_FAKE_SYSTEMCTL"):
         return
-    subprocess.run(["systemctl", "--user", *args], capture_output=True)
+    try:
+        subprocess.run(["systemctl", "--user", *args], capture_output=True)
+    except FileNotFoundError:
+        print(f"[WARN] systemctl 없음 — 건너뜀: systemctl --user {' '.join(args)}")
 
 
 def enable_linger() -> None:
-    """VPS: 로그아웃·부팅 뒤에도 사용자 유닛이 살게(실패 무시 — WSL2 등 권한 없는 환경)."""
+    """VPS: 로그아웃·부팅 뒤에도 사용자 유닛이 살게(실패 무시 — WSL2 등 권한 없는 환경·loginctl 부재)."""
     import subprocess
     if os.environ.get("HARNESS_FAKE_SYSTEMCTL"):
         return
-    subprocess.run(["loginctl", "enable-linger", os.environ.get("USER", "")], capture_output=True)
+    try:
+        subprocess.run(["loginctl", "enable-linger", os.environ.get("USER", "")], capture_output=True)
+    except FileNotFoundError:
+        pass
 
 
 def systemd_user_state() -> str:
@@ -185,6 +197,8 @@ def write_tmux_unit(label: str, session: str, description: str, cmd: str, extra_
     cmd_file.write_text(cmd + "\n")
     up.write_text(f'#!/bin/bash\nexec "{tmux}" new-session -d -s {session} "$(cat "{cmd_file}")"\n')
     up.chmod(0o755)
+    if not has_systemd():
+        return False   # 사이드카만 — 유닛은 systemd가 있어야 의미가 있다
     body = (f"# {description}\n[Unit]\nDescription={label} (tmux 세션 {session})\n"
             "After=network-online.target\n\n"
             "[Service]\nType=oneshot\nRemainAfterExit=yes\nKillMode=process\n"
@@ -223,7 +237,11 @@ def write_unit(bot: dict) -> list[str]:
     if not bot["autostart"]:
         return [f"{line}(autostart off)" for line in remove_units([label], [bot["session"]], stop=False)]
     desc = f"folder-bot: name={bot['name']} session={bot['session']} folder={bot['folder']}"
-    if write_tmux_unit(label, bot["session"], desc, build_cmd(bot)):
+    changed = write_tmux_unit(label, bot["session"], desc, build_cmd(bot))
+    if not has_systemd():
+        return [f"[WARN] systemd 없음 — 유닛 생략, 사이드카만: {sidecar_paths(bot['session'])[0]}"
+                " (자동 기동 없음, 재기동은 bot-restart·외부 감시자 몫)"]
+    if changed:
         return [f"유닛 생성: {plist_path(bot)} (systemd --user, 부팅 자동 기동 — WSL2는 우분투가 켜져 있는 동안)"]
     return []
 
@@ -709,7 +727,8 @@ def cmd_doctor(a) -> None:
         st = systemd_user_state()
         if st not in ("running", "degraded"):
             print(f"[WARN] systemd --user: {st or '없음'} — 자동 기동 불가"
-                  + (" (WSL2: /etc/wsl.conf에 [boot] systemd=true, PowerShell에서 wsl --shutdown 뒤 다시)" if is_wsl() else ""))
+                  + (" (WSL2: /etc/wsl.conf에 [boot] systemd=true, PowerShell에서 wsl --shutdown 뒤 다시)" if is_wsl()
+                     else "" if has_systemd() else " (systemctl 없음: 유닛 없이 사이드카만, 재기동은 외부 몫)"))
     for name in names:
         b = resolve_bot(name)
 
@@ -744,7 +763,7 @@ def cmd_doctor(a) -> None:
                 rep("WARN", "브리지 데몬 죽음/미기동")
         else:
             p = plist_path(b)
-            if b["autostart"] and not p.exists():
+            if b["autostart"] and not p.exists() and (host_os() != "linux" or has_systemd()):
                 rep("FAIL", f"{'유닛' if host_os() == 'linux' else 'plist'} 없음: {p}")
             trusted = False
             try:

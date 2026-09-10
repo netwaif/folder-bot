@@ -14,7 +14,7 @@
 /plugin install folder-bot@folder-bot
 ```
 
-전제: macOS 또는 리눅스(VPS·WSL2 — systemd --user 필요), tmux, Claude Code discord 공식 플러그인. 자동 기동은 macOS=LaunchAgent, 리눅스=systemd 사용자 유닛(WSL2는 우분투가 켜져 있는 동안만 봇이 산다).
+전제: macOS 또는 리눅스(VPS·WSL2 — systemd --user 권장; 도커 컨테이너 등 systemd 없는 곳은 자동 기동 없이 동작), tmux, Claude Code discord 공식 플러그인. 자동 기동은 macOS=LaunchAgent, 리눅스=systemd 사용자 유닛(WSL2는 우분투가 켜져 있는 동안만 봇이 산다).
 
 ## 사용
 

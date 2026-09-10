@@ -1,4 +1,4 @@
-import json, os, subprocess, sys
+import json, os, shutil, subprocess, sys
 from pathlib import Path
 
 BOTCTL = Path(__file__).parent.parent / "plugins/folder-bot/skills/configure-bot/generator/botctl.py"
@@ -435,6 +435,40 @@ def test_linux_doctor_checks_unit_and_cache_log(tmp_path):
     (mcp / "a.jsonl").write_text('{"m":"Successfully connected (transport: stdio) in 9ms"}\n')
     r = run_linux(tmp_path, "doctor", "--name", "b")
     assert "MCP 연결 성공" in r.stdout and "유닛 없음" not in r.stdout
+
+
+def run_no_systemd(env_home, *args):
+    """systemctl·loginctl 부재 시뮬레이션(도커 컨테이너): PATH에 tmux만, FAKE 해제 → 실호출 경로가 FileNotFoundError를 맞는다."""
+    bindir = env_home / "bin"; bindir.mkdir(exist_ok=True)
+    (bindir / "tmux").exists() or (bindir / "tmux").symlink_to(shutil.which("tmux"))
+    env = {k: v for k, v in os.environ.items() if k != "HARNESS_FAKE_SYSTEMCTL"}
+    env.update(HOME=str(env_home), HARNESS_OS="Linux", PATH=str(bindir))
+    return subprocess.run([sys.executable, str(BOTCTL), *args],
+                          capture_output=True, text=True, env=env)
+
+
+def test_linux_add_without_systemd_leaves_sidecar_only(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    r = run_no_systemd(tmp_path, "add", "--name", "b", "--folder", str(folder),
+                       "--session", "b-bot", "--no-directive-block")
+    assert r.returncode == 0, r.stderr
+    d = tmp_path / ".config/systemd/user"
+    assert not (d / "com.folder-bot.b.service").exists()
+    assert (d / "b-bot.tmux-cmd").exists() and (d / "b-bot.up.sh").exists()   # bot-restart가 읽는 정본은 남는다
+    assert "[WARN] systemd 없음" in r.stdout and "사이드카만" in r.stdout
+    r = run_no_systemd(tmp_path, "start", "--name", "b", "--dry-run")
+    assert r.returncode == 0 and "new-session -d -s b-bot" in r.stdout and "systemctl" not in r.stdout
+    r = run_no_systemd(tmp_path, "remove", "--name", "b")
+    assert r.returncode == 0 and not list(d.iterdir()), (r.stderr, list(d.iterdir()))
+
+
+def test_linux_doctor_without_systemd_warns_not_fails(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run_no_systemd(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+                   "--no-directive-block")
+    r = run_no_systemd(tmp_path, "doctor", "--name", "b")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "systemctl 없음" in r.stdout and "유닛 없음" not in r.stdout
 
 
 def test_linux_codex_add_writes_units(tmp_path):
