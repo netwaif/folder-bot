@@ -143,7 +143,7 @@ def install_scripts() -> list[str]:
     bin_dir.mkdir(parents=True, exist_ok=True)
     for src_name, dst_name in (("bot-up.sh", "bot-up"), ("bot-restart.sh", "bot-restart"),
                                ("bot-thread.sh", "bot-thread"), ("bot-thread-stop.sh", "bot-thread-stop"),
-                               ("bot-thread-route.sh", "bot-thread-route")):
+                               ("bot-thread-route.sh", "bot-thread-route"), ("bot-thread-compact.sh", "bot-thread-compact")):
         src, dst = ASSETS / src_name, bin_dir / dst_name
         if not (dst.exists() and dst.read_bytes() == src.read_bytes()):
             shutil.copyfile(src, dst)
@@ -535,7 +535,8 @@ def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
 # 스레드 라이브 뷰 훅 2종 — UserPromptSubmit: 스레드 메시지를 스레드 세션으로 라우팅(메인 처리 차단, exit 2) /
 # Stop: 스레드 세션의 답변을 REST로 게시. 둘 다 해당 안 되는 세션에서는 즉시 exit 0.
 THREAD_HOOKS = {"UserPromptSubmit": "bash ~/.local/bin/bot-thread-route",
-                "Stop": "bash ~/.local/bin/bot-thread-stop"}
+                "Stop": "bash ~/.local/bin/bot-thread-stop",
+                "PreCompact": "bash ~/.local/bin/bot-thread-compact"}
 
 
 def write_thread_hooks(bot: dict) -> tuple[list[str], list[str]]:
@@ -884,7 +885,7 @@ def cmd_doctor(a) -> None:
                                capture_output=True).returncode == 0
         rep("OK" if alive else "WARN", f"tmux 세션 {'생존' if alive else '없음'}: {b['session']}")
         if b["engine"] == "claude":
-            for tool in ("bot-thread", "bot-thread-stop", "bot-thread-route"):
+            for tool in ("bot-thread", "bot-thread-stop", "bot-thread-route", "bot-thread-compact"):
                 if not (home() / ".local/bin" / tool).exists():
                     rep("WARN", f"스레드 라이브 뷰 스크립트 없음: ~/.local/bin/{tool} (add 재실행)")
             if not shutil.which("curl"):

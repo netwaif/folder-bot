@@ -531,6 +531,7 @@ def test_remove_block_deletes_file_it_created(tmp_path):
 ASSETS = BOTCTL.parent.parent / "assets"
 THREAD_HOOK = "bash ~/.local/bin/bot-thread-stop"
 ROUTE_HOOK = "bash ~/.local/bin/bot-thread-route"
+COMPACT_HOOK = "bash ~/.local/bin/bot-thread-compact"
 
 
 def test_add_injects_thread_hook_preserving_user_hooks(tmp_path):
@@ -547,7 +548,8 @@ def test_add_injects_thread_hook_preserving_user_hooks(tmp_path):
     assert cmds == ["echo mine", THREAD_HOOK]
     assert data["hooks"]["PreToolUse"][0]["matcher"] == "Bash"
     bots = json.loads((tmp_path / ".config/folder-bot/bots.json").read_text())
-    assert set(bots["b"]["thread_hooks"]) == {THREAD_HOOK, ROUTE_HOOK}
+    assert set(bots["b"]["thread_hooks"]) == {THREAD_HOOK, ROUTE_HOOK, COMPACT_HOOK}
+    assert data["hooks"]["PreCompact"][0]["hooks"][0]["command"] == COMPACT_HOOK
     assert data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == ROUTE_HOOK
     # 재실행해도 중복 주입 없음
     run(tmp_path, "add", "--name", "b", "--folder", str(folder),
@@ -559,7 +561,7 @@ def test_add_injects_thread_hook_preserving_user_hooks(tmp_path):
     assert r.returncode == 0, r.stderr
     data = json.loads((folder / ".claude/settings.local.json").read_text())
     assert [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]] == ["echo mine"]
-    assert "UserPromptSubmit" not in data["hooks"]
+    assert "UserPromptSubmit" not in data["hooks"] and "PreCompact" not in data["hooks"]
     assert (tmp_path / ".local/bin/bot-thread").exists() and (tmp_path / ".local/bin/bot-thread-route").exists()
 
 
@@ -738,3 +740,65 @@ def test_route_hook_falls_back_to_main_on_ensure_failure(tmp_path):
     tag = '<channel source="plugin:discord:discord" chat_id="777000999" message_id="42" user="u" ts="t">'
     r = _route(tmp_path, f"{tag}\n질문\n</channel>", folder, {"BOT_THREAD_BIN": str(fake)})
     assert r.returncode == 0 and "[스레드 라우팅 실패]" in r.stdout
+
+
+def test_rotate_assigns_new_session_and_fresh_flag(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    st = _thread_env(tmp_path, folder)
+    (st / "threads.json").write_text(json.dumps({"777": {"session_id": "old-sid", "window": "t000777"}}))
+    env = dict(os.environ, HOME=str(tmp_path), BOT_THREAD_TMUX="/bin/false")
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "rotate", "b", "777"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    m = json.loads((st / "threads.json").read_text())["777"]
+    assert m["session_id"] == r.stdout.strip() and m["session_id"] != "old-sid"
+    assert m["previous"] == ["old-sid"] and m["fresh"] == "1"
+    assert (folder / "threads/777").is_dir()
+    # fresh는 한 번만 1, 이후 0
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "fresh", "b", "777"], capture_output=True, text=True, env=env)
+    assert r.stdout.strip() == "1"
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "fresh", "b", "777"], capture_output=True, text=True, env=env)
+    assert r.stdout.strip() == "0"
+
+
+def test_route_hook_prefixes_reanchor_when_fresh_and_session_md_exists(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    st = _thread_env(tmp_path, folder)
+    (st / "access.json").write_text(json.dumps({"groups": {"1000": {}}}))
+    (folder / "threads/777000999").mkdir(parents=True)
+    (folder / "threads/777000999/SESSION.md").write_text("# SESSION\n")
+    log = tmp_path / "bt.log"; fake = tmp_path / "bot-thread"
+    fake.write_text("#!/bin/bash\necho \"$1 $2 $3\" >> '%s'\ncase \"$1\" in kind) echo 'thread 555';; ensure) echo 'b-t000999';; fresh) echo 1;; list) printf 'thread_id\\tsession_id\\n777000999\\tsid\\n';; deliver) cat >> '%s';; esac\n" % (log, log))
+    fake.chmod(0o755)
+    tag = '<channel source="plugin:discord:discord" chat_id="777000999" message_id="42" user="u" ts="t">'
+    r = _route(tmp_path, f"{tag}\n이어서\n</channel>", folder, {"BOT_THREAD_BIN": str(fake)})
+    assert r.returncode == 2
+    body = log.read_text()
+    assert "[재정박]" in body and "threads/777000999/SESSION.md" in body and body.index("[재정박]") < body.index("이어서")
+
+
+def test_stop_hook_appends_thread_log(tmp_path):
+    fake_bt = tmp_path / "bot-thread"; fake_bt.write_text("#!/bin/bash\ncat >/dev/null\n"); fake_bt.chmod(0o755)
+    folder = tmp_path / "w"; folder.mkdir()
+    tr = tmp_path / "t.jsonl"
+    tr.write_text("\n".join(json.dumps(l, ensure_ascii=False) for l in [
+        {"type": "user", "message": {"content": '<channel chat_id="9">질문 하나</channel>'}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "답 하나"}]}},
+    ]) + "\n")
+    env = dict(os.environ, DISCORD_THREAD_ID="9", DISCORD_BOT_NAME="b", BOT_THREAD_BIN=str(fake_bt), PWD=str(folder))
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread-stop.sh")], input=json.dumps({"transcript_path": str(tr), "stop_hook_active": False}),
+                       capture_output=True, text=True, env=env, cwd=str(folder))
+    assert r.returncode == 0, r.stderr
+    line = (folder / "threads/9/log.md").read_text().strip()
+    assert "Q: 질문 하나" in line and "A: 답 하나" in line and "<channel" not in line
+
+
+def test_compact_hook_posts_notice_only_in_thread_session(tmp_path):
+    out = tmp_path / "posted.txt"; fake = tmp_path / "bot-thread"
+    fake.write_text(f"#!/bin/bash\necho \"$1 $2 $3 $4\" > '{out}'\n"); fake.chmod(0o755)
+    subprocess.run(["bash", str(ASSETS / "bot-thread-compact.sh")], input="{}", capture_output=True, text=True,
+                   env=dict(os.environ, DISCORD_THREAD_ID="9", DISCORD_BOT_NAME="b", BOT_THREAD_BIN=str(fake)))
+    assert out.read_text().startswith("post b 9") and "compact" in out.read_text()
+    out.unlink()
+    subprocess.run(["bash", str(ASSETS / "bot-thread-compact.sh")], input="{}", capture_output=True, text=True,
+                   env=dict(os.environ, BOT_THREAD_BIN=str(fake)))
+    assert not out.exists()

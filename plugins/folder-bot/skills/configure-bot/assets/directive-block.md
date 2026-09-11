@@ -21,6 +21,9 @@
 - "스레드 파서 해줘 / 이 건은 스레드로": `bot-thread open <봇이름> <chat_id> <이름> [message_id]`로 스레드를
   만들고, 스레드 ID를 reply로 알린다. 이후 그 스레드의 메시지는 훅이 처리한다.
 - 상태 확인: `bot-thread list <봇이름>`.
+- **스레드에서 있었던 일은 이 세션이 모른다**(컨텍스트 분리). 질문이 스레드 작업과 관련돼 보이거나 모르는 건이 나오면
+  추측하지 말고 먼저 `threads/*/log.md`(스레드별 한 줄 요약)·`threads/*/SESSION.md`를 훑고, 부족하면
+  `fetch_messages(chat_id=<스레드ID>)`로 원문을 읽은 뒤 답한다. 스레드 ID·이름은 `bot-thread list`.
 
 **이 세션이 스레드 세션이면**(환경변수 `DISCORD_THREAD_ID`가 있다): 스레드 `$DISCORD_THREAD_ID` 전담이다.
 메시지는 `<channel …>` 태그째 들어오고, 답변은 Stop 훅이 자동으로 스레드에 게시하므로 평소처럼 답하면 된다 —
@@ -29,6 +32,13 @@ reply 도구는 없다(플러그인 미탑재). 첨부는 "첨부 파일(다운�
 긴 작업의 중간 보고도 같은 명령으로 직접 올린다. 메인 채널·다른 스레드 일은 이 세션 소관이 아니다.
 이 세션에는 discord 플러그인이 없다(비활성) — 연결 상태·게시 성패·라우팅 로그를 답변에 언급하지 않는다.
 사용자가 물은 것에만 답한다.
+- **세션 이어가기 정본은 `threads/$DISCORD_THREAD_ID/SESSION.md`다.** 폴더 SESSION.md는 참고로 읽되 갱신하지 않는다
+  (메인 세션 몫). 메시지 앞에 `[재정박]`이 붙어 오면 그 파일을 먼저 읽고 현재 상태·다음 단계를 복창한 뒤 이어간다.
+- 컨텍스트가 차면 기본은 자동 압축(폴백). 사용자가 "세션 마감하고 재시작해"라고 하면: ①`threads/$DISCORD_THREAD_ID/SESSION.md`
+  증분 갱신(없으면 폴더의 SESSION.template.md를 복사, 그것도 없으면 목표/현재 상태/다음 단계/결정 기록/파일 흔적 5절로 생성)
+  ②이 스레드의 결론 중 메인 작업의 전제가 될 것이 있으면 폴더 SESSION.md **결정 기록에 한 줄만** 추가(허용된 유일한 폴더 SESSION.md 갱신)
+  ③`bot-thread post $DISCORD_BOT_NAME $DISCORD_THREAD_ID "재시작 들어감 — 다음 메시지부터 새 세션이 기록을 읽고 이어갑니다"`
+  ④`bot-thread rotate $DISCORD_BOT_NAME $DISCORD_THREAD_ID`. 이 세션은 곧 닫힌다.
 
 ### 주의
 - 이 폴더에서 로컬 터미널 세션과 봇 세션을 병행하면 같은 SESSION.md를 공유한다 —

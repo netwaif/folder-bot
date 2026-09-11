@@ -76,6 +76,12 @@ AGENT=$("$BOT_THREAD" ensure "$BOT" "$CHAT_ID" 2>>"$STATE/thread-route.log") || 
 
 # 원문(태그 포함) + 첨부 경로
 BODY=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("prompt",""))' "$INPUT")
+# 새 세션(회전·첫 기동)이고 스레드 SESSION.md가 있으면 재정박 접두 — 세션 이어가기 규율의 "시작 시 읽기"를 훅이 보장
+if [[ "$("$BOT_THREAD" fresh "$BOT" "$CHAT_ID" 2>/dev/null)" == "1" && -f "$FOLDER/threads/$CHAT_ID/SESSION.md" ]]; then
+  BODY="[재정박] 이 세션은 스레드 $CHAT_ID 의 새 세션이다. 답하기 전에 threads/$CHAT_ID/SESSION.md를 먼저 읽고 현재 상태와 다음 단계를 한두 문장으로 복창한 뒤 아래 메시지를 이어서 처리한다.
+
+$BODY"
+fi
 if [[ -n "$MSG_ID" ]] && grep -q 'attachment_count=' <<<"$BODY"; then
   ATT=$("$BOT_THREAD" fetch-attachments "$BOT" "$CHAT_ID" "$MSG_ID" 2>>"$STATE/thread-route.log" || true)
   [[ -n "$ATT" ]] && BODY="$BODY

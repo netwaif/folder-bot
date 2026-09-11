@@ -10,6 +10,8 @@
 #   bot-thread open   <봇> <channel_id> <이름> [message_id]         → 새 스레드 ID 출력
 #   bot-thread deliver <봇> <thread_id> -              → stdin 원문을 스레드 세션 pane에 붙여넣고 제출(훅이 호출)
 #   bot-thread fetch-attachments <봇> <chat_id> <message_id> → 첨부를 .discord-state/inbox/<mid>/에 받고 경로 출력
+#   bot-thread rotate <봇> <thread_id>                  → 새 세션 ID로 회전(옛 transcript 보존)·창 닫기 — compact 대신 세부 보존
+#   bot-thread fresh  <봇> <thread_id>                  → 직전 ensure가 새 세션을 만들었으면 1 출력 후 표식 소거(라우팅 훅용)
 #   bot-thread gc     <봇> [--idle-hours N] [--all]     → 유휴 창 정리(맵은 유지 — 다음 메시지에 resume)
 #   bot-thread list   <봇>
 #
@@ -151,8 +153,9 @@ cmd_ensure() {
     log "창 $win 있으나 claude 프로세스 없음 — 재생성"
     "$TMUX_BIN" kill-window -t "$SESSION:$win" 2>/dev/null || true
   fi
-  local resume_flag="--session-id $sid"
-  [[ -n "$(transcript_of "$sid")" ]] && resume_flag="--resume $sid"
+  local resume_flag="--session-id $sid" fresh=1
+  [[ -n "$(transcript_of "$sid")" ]] && { resume_flag="--resume $sid"; fresh=0; }
+  map_set "$tid" "fresh=$fresh"   # 새 세션이면 라우팅 훅이 [재정박] 접두를 붙인다(fresh가 소거)
   # 스레드 세션은 discord 플러그인을 끈다 — 토큰 없이 뜬 플러그인이 "토큰 필요"로 죽으면 런타임이
   # ~/.claude/mcp-needs-auth-cache.json에 전역 캐시해 메인 봇의 재기동 연결까지 막는다(2026-09-11 실측).
   # JSON을 인라인으로 넘기면 tmux 명령 문자열의 따옴표가 깨져 세션이 즉시 종료된다(2026-09-11 실측) → 파일로.
@@ -258,6 +261,34 @@ EOF2
   done
 }
 
+# compact 대신 세부 보존: 스레드 세션이 threads/<id>/SESSION.md를 갱신한 뒤 호출한다.
+# 새 uuid를 배정하고(옛 세션 ID는 previous에 보관, transcript는 그대로) 창을 닫는다.
+# 다음 메시지에 라우팅 훅이 새 세션을 띄우고 "[재정박]" 접두로 SESSION.md를 먼저 읽게 한다.
+cmd_rotate() {
+  local tid="$1"
+  local old; old=$(map_get "$tid" session_id)
+  [[ -n "$old" ]] || { echo "오류: 등록되지 않은 스레드: $tid" >&2; return 1; }
+  local new; new=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  python3 - "$MAP" "$tid" "$old" "$new" <<'EOF'
+import json, sys
+p, tid, old, new = sys.argv[1:5]
+m = json.load(open(p)); e = m[tid]
+e.setdefault("previous", []).append(old); e["session_id"] = new; e["fresh"] = "1"
+json.dump(m, open(p, "w"), ensure_ascii=False, indent=2)
+EOF
+  mkdir -p "$FOLDER/threads/$tid"
+  local win="t$(short_of "$tid")"
+  [[ -n "$TMUX_BIN" ]] && "$TMUX_BIN" kill-window -t "$SESSION:$win" 2>/dev/null
+  log "회전: 스레드 $tid 세션 $old → $new (창 $win 닫음, 다음 메시지에 재정박)"
+  echo "$new"
+}
+
+cmd_fresh() {
+  local tid="$1"
+  local f; f=$(map_get "$tid" fresh)
+  if [[ "$f" == "1" ]]; then map_set "$tid" "fresh=0"; echo 1; else echo 0; fi
+}
+
 cmd_gc() {
   local hours=6 all="" quiet=""
   while [[ $# -gt 0 ]]; do case "$1" in --idle-hours) hours="$2"; shift 2;; --all) all=1; shift;; --quiet) quiet=1; shift;; *) shift;; esac; done
@@ -311,6 +342,8 @@ case "$CMD" in
   open)   cmd_open "$@" ;;
   deliver) cmd_deliver "$@" ;;
   fetch-attachments) cmd_fetch_attachments "$@" ;;
+  rotate) cmd_rotate "$@" ;;
+  fresh)  cmd_fresh "$@" ;;
   gc)     cmd_gc "$@" ;;
   list)   cmd_list ;;
   *) echo "알 수 없는 명령: $CMD" >&2; exit 1 ;;

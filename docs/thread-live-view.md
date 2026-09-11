@@ -85,3 +85,16 @@
 1. 단위: bot-thread `kind` 파싱(가짜 curl), 맵 증분, Stop 훅 추출(픽스처 transcript: 도구 호출·중간 텍스트 섞인 턴에서 마지막 턴 텍스트만) — 기존 36 + 신규 통과.
 2. 실기(dev-claudecode, 컨테이너): 채널에 스레드 생성 → 사용자가 스레드에 메시지 → 봇 tmux 세션에 창 `t<short>` 생성·SendMessage 도달 → 답변이 스레드에 게시. 봇 재시작 후 같은 스레드에 다시 메시지 → `--resume`으로 맥락 유지. 메인 채널 메시지는 메인 세션이 그대로 처리. `gc` 후 창 사라지고 다음 메시지에 복원.
 3. 실기(맥, 폴더 봇 1개): 같은 시나리오.
+
+## 0.1.10 — 컨텍스트 관리와 메인↔스레드 지식 (2026-09-11 사용자 결정)
+- **compact는 폴백으로 둔다.** auto-compact를 끄지 않는다(끄면 세션이 멈춘다). 회전은 세부 보존이 필요할 때만 사람이 고른다.
+- **회전(`bot-thread rotate`)**: 스레드 세션이 `threads/<ID>/SESSION.md`(loadout 세션 이어가기 규율 그대로, 같은 템플릿) 증분 갱신 →
+  메인 전제가 될 결론만 폴더 SESSION.md 결정 기록에 한 줄 → "재시작 들어감" 게시 → rotate(새 uuid, 옛 ID는 `previous`, 창 닫기).
+  다음 메시지에 라우팅 훅이 `fresh` 표식을 보고 `[재정박] threads/<ID>/SESSION.md를 먼저 읽고…` 접두를 결정적으로 붙인다.
+- **PreCompact 훅(bot-thread-compact)**: compact 직전 스레드에 사후 알림 한 줄.
+- **메인은 스레드를 모른다(설계).** Stop 훅이 `threads/<ID>/log.md`에 "시각 Q→A" 한 줄을 자동 기록. 메인 지침: 스레드 관련 질문이면
+  `threads/*/log.md`·SESSION.md → 부족하면 `fetch_messages(chat_id=스레드ID)` 원문 → 답. 추측 금지.
+- 규율의 주인은 loadout 그대로. folder-bot 블록은 "스레드 세션이면 정본은 threads/<ID>/SESSION.md" 경로 분기만 얹는다.
+  loadout 세션 이어가기 조각에 "[folder-bot 스레드 세션인 경우]" 조건부 한 줄 추가는 loadout 다음 갱신 항목.
+- 0.1.10 후속 항목: add가 봇 폴더 settings.local.json permissions.allow에 `Bash(bot-restart:*)`·`Bash(bot-thread:*)` 주입
+  (auto 모드 분류기가 bot-restart를 막은 실측 2026-09-11).

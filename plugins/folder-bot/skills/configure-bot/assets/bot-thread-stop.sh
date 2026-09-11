@@ -67,6 +67,28 @@ if [[ -z "${TEXT// /}" ]]; then
 fi
 if OUT=$(printf '%s' "$TEXT" | "$BOT_THREAD" post "$DISCORD_BOT_NAME" "$DISCORD_THREAD_ID" - 2>&1); then
   log "스레드 $DISCORD_THREAD_ID: 게시 ${#TEXT}자"
+  # 메인 세션이 "스레드에서 무슨 일이 있었나"를 찾아볼 수 있게 한 줄 요약을 남긴다(threads/<id>/log.md, 결정적)
+  python3 - "$INPUT" "$TEXT" "$PWD/threads/$DISCORD_THREAD_ID/log.md" <<'EOF' 2>/dev/null || true
+import json, sys, os, re, datetime
+hook = json.loads(sys.argv[1]); ans = sys.argv[2]; out = sys.argv[3]
+q = ""
+try:
+    for line in open(hook.get("transcript_path", ""), encoding="utf-8"):
+        try: d = json.loads(line)
+        except ValueError: continue
+        if d.get("type") != "user": continue
+        c = (d.get("message") or {}).get("content")
+        if isinstance(c, list):
+            if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c): continue
+            c = " ".join(b.get("text", "") for b in c if isinstance(b, dict))
+        if isinstance(c, str) and c.strip(): q = c
+except OSError: pass
+q = re.sub(r"<[^>]+>", " ", q); q = re.sub(r"\s+", " ", q).strip()
+one = lambda t, n: re.sub(r"\s+", " ", t).strip()[:n]
+os.makedirs(os.path.dirname(out), exist_ok=True)
+with open(out, "a", encoding="utf-8") as f:
+    f.write(f"- {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} Q: {one(q, 80)} → A: {one(ans, 140)}\n")
+EOF
 else
   log "스레드 $DISCORD_THREAD_ID: 게시 실패 — $OUT"
   echo "bot-thread-stop: 게시 실패(스레드 $DISCORD_THREAD_ID)" >&2

@@ -148,6 +148,10 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 - **비공개 스레드**는 봇을 @멘션해 초대한 뒤부터 받는다(디스코드 규칙).
 - 상태·정리: `bot-thread list <봇>`, `bot-thread gc <봇> [--all]`. 로그: `<폴더>/.discord-state/thread-route.log`,
   `~/.claude/logs/bot-thread-stop.log`.
+- **컨텍스트가 차면**: 기본은 auto-compact(폴백, 세부 일부 손실). 세부를 보존하려면 스레드에서 **"세션 마감하고 재시작해"** →
+  스레드 세션이 `threads/<스레드ID>/SESSION.md`를 갱신하고 `bot-thread rotate`로 새 세션에 넘긴다(다음 메시지에 `[재정박]`
+  접두로 그 파일을 먼저 읽음). compact가 돌면 PreCompact 훅이 스레드에 알린다. 메인 세션은 스레드 내용을 모르므로
+  스레드 관련 질문엔 `threads/*/log.md`(자동 한 줄 요약)·SESSION.md·`fetch_messages`로 찾아 답한다.
 - 설계·검증 기록: `docs/thread-live-view.md`. codex·agy 엔진의 스레드 라이브는 2차(미지원).
 
 ## codex 엔진 봇 (폴더가 codex로 운용되는 경우)
