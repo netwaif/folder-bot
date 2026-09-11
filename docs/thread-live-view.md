@@ -78,7 +78,7 @@
 | | 맥 | 리눅스(systemd) | 리눅스 컨테이너 | 윈도우(WSL2) |
 |---|---|---|---|---|
 | Claude Code | 같은 코드(bash·curl·tmux·claude) | 같음 | 같음(UDS 폴백 확인) | 같음 |
-| Codex | A 코드(codex-discord 0.1.18, 맥 실기 미완) | 같음 | A 됨(컨테이너 실기 9/11 — `CODEX_TUI_SANDBOX=off` 필요, bwrap 불가) | 같음 |
+| Codex | A 됨(맥 실기 9/11, codex-discord 0.1.19) | 같음 | A 됨(컨테이너 실기 9/11 — `CODEX_TUI_SANDBOX=off` 필요, bwrap 불가) | 같음 |
 | Gemini(agy) | B 됨(맥 실기 9/11) | 같음 | A 됨(컨테이너 실기 9/11) | 같음 |
 
 A단계 실기 = 메인 "스레드로 해줘" → thread.sh open·안내 / 스레드 대화 → `threads/<id>/log.md` / "세션 마감하고 재시작해" → SESSION.md·rotate → 다음 메시지 `[재정박]`.
