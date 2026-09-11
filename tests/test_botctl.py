@@ -541,10 +541,23 @@ def test_linux_codex_add_enables_without_now_and_start_starts_daemon(tmp_path):
     assert "enable com.codex-discord.b-tui.service" in calls
     assert "enable com.codex-discord.b.service" in calls
     assert not [c for c in calls if "--now" in c or c.startswith("start")], calls
+    r = subprocess.run([sys.executable, str(BOTCTL), "start", "--name", "b", "--dry-run"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and "systemctl --user start com.codex-discord.b-tui.service com.codex-discord.b.service" in r.stdout
     r = subprocess.run([sys.executable, str(BOTCTL), "start", "--name", "b"],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr + r.stdout
-    assert "start com.codex-discord.b.service" in log.read_text().splitlines()
+    calls = log.read_text().splitlines()
+    # 0.1.17: TUI도 유닛 경유(발견③) — 세션 없음+가짜 is-active=0 → restart, 그 뒤 데몬 start
+    assert "reset-failed com.codex-discord.b-tui.service" in calls
+    assert [c for c in calls if c in ("start com.codex-discord.b-tui.service", "restart com.codex-discord.b-tui.service")]
+    assert "start com.codex-discord.b.service" in calls
+    assert "tui-up-b.log" in r.stdout
+    r = subprocess.run([sys.executable, str(BOTCTL), "stop", "--name", "b"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr + r.stdout
+    calls = log.read_text().splitlines()
+    assert "stop com.codex-discord.b-tui.service" in calls and "stop com.codex-discord.b.service" in calls
 
 
 def test_bot_scripts_syntax_and_linux_branches():

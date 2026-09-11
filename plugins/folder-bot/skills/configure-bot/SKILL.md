@@ -170,6 +170,8 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 
 - add = 브리지 인스턴스(.env.<이름>·data-<이름>) + 데몬·TUI plist(리눅스: systemd 유닛) + 지침 블록
   (전용 채널이라 호명 게이트 off — `TUI_TRIGGER_GATE=off`).
+- start/stop = 리눅스(systemd)는 유닛 경유(`systemctl --user start/stop <TUI>·<데몬>`) — TUI 기동 로그는
+  `<브리지>/logs/tui-up-<이름>.log`, 실패 시 그 로그를 읽고 안내한다. 맥·systemd 없는 컨테이너는 tui-up.sh 직접.
   - 지침 파일: codex = **AGENTS.md** / agy = **`.agents/rules/discord-bot.md`**(프런트매터 `trigger: always_on`.
     agy는 GEMINI.md·AGENTS.md·`.agents/rules/*.md` 셋을 읽으며, 사용자 파일을 안 건드리려 전용 규칙 파일을 쓴다). `.env.<이름>`은 agy면
     `ENGINE=agy`·`AGY_BIN`, codex면 `CODEX_BIN`. `CODEX_WORKDIR`는 엔진 무관 키(브리지·관제탑 매칭 키).

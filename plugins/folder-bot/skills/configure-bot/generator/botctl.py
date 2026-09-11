@@ -56,19 +56,21 @@ def has_systemd() -> bool:
     return bool(os.environ.get("HARNESS_FAKE_SYSTEMCTL")) or shutil.which("systemctl") is not None
 
 
-def systemctl_user(*args) -> None:
-    """systemctl --user 호출. HARNESS_FAKE_SYSTEMCTL=1이면 무접촉(테스트, 값이 경로면 호출을 그 파일에 기록). 바이너리 없으면 WARN 후 건너뜀."""
+def systemctl_user(*args) -> int:
+    """systemctl --user 호출, 반환 코드를 돌려준다. HARNESS_FAKE_SYSTEMCTL=1이면 무접촉·0(테스트, 값이 경로면 호출을
+    그 파일에 기록). 바이너리 없으면 WARN 후 1."""
     import subprocess
     fake = os.environ.get("HARNESS_FAKE_SYSTEMCTL")
     if fake:
         if fake.startswith("/"):
             with open(fake, "a") as f:
                 f.write(" ".join(args) + "\n")
-        return
+        return 0
     try:
-        subprocess.run(["systemctl", "--user", *args], capture_output=True)
+        return subprocess.run(["systemctl", "--user", *args], capture_output=True).returncode
     except FileNotFoundError:
         print(f"[WARN] systemctl 없음 — 건너뜀: systemctl --user {' '.join(args)}")
+        return 1
 
 
 def enable_linger() -> None:
@@ -879,6 +881,25 @@ def cmd_start(a) -> None:
     tmux = find_tmux()
     if is_bridge(bot):
         tui_up = f"{bot['bridge_dir']}/scripts/tui-up.sh"
+        daemon_l, tui_l = codex_labels(bot)
+        tui_u, daemon_u = unit_name(tui_l), unit_name(daemon_l)
+        if host_os() == "linux" and has_systemd() and (service_dir() / tui_u).exists():
+            # 유닛 경유 — tui-up.sh를 직접 돌리면 세션은 살아도 TUI 유닛이 inactive로 남아 systemctl status·
+            # is-system-running과 실물이 어긋난다(WSL2 실기 2026-09-12 발견③). oneshot이라 start가 tui-up.sh 완주까지
+            # 막히고 실패면 비0. 세션은 죽었는데 유닛이 active(exited)면 start가 무동작이라 restart(ExecStop의
+            # kill-session은 세션이 없어도 무해).
+            log = f"{bot['bridge_dir']}/logs/tui-up-{bot['name']}.log"
+            if a.dry_run:
+                print(f"systemctl --user start {tui_u} {daemon_u}")
+                return
+            alive = subprocess.run([tmux, "has-session", "-t", bot["session"]], capture_output=True).returncode == 0
+            verb = "restart" if (not alive and systemctl_user("is-active", tui_u) == 0) else "start"
+            systemctl_user("reset-failed", tui_u)
+            if systemctl_user(verb, tui_u) != 0:
+                sys.exit(f"오류: TUI 기동 실패 — {log} 확인")
+            systemctl_user("start", daemon_u)
+            print(f"기동: {bot['session']} (유닛 {tui_u}) + 데몬 {daemon_u} (systemd --user) — TUI 로그 {log}")
+            return
         if a.dry_run:
             print(f"{tui_up} .env.{bot['name']} + launchctl bootstrap "
                   f"com.codex-discord.{bot['name']}")
@@ -888,9 +909,8 @@ def cmd_start(a) -> None:
         if r.returncode != 0:
             sys.exit(f"오류: TUI 기동 실패 — {bot['bridge_dir']}/logs 확인")
         if host_os() == "linux":
-            daemon_l, _ = codex_labels(bot)
-            if has_systemd():
-                systemctl_user("start", unit_name(daemon_l))
+            if has_systemd():   # 유닛 없음(autostart off): TUI는 위에서 직접, 데몬만 유닛
+                systemctl_user("start", daemon_u)
                 print(f"데몬 기동: {daemon_l} (systemd --user)")
                 return
             ds = daemon_session(bot)
@@ -930,6 +950,11 @@ def cmd_stop(a) -> None:
     bot = resolve_bot(a.name)
     if host_os() == "linux" and bot["engine"] == "claude" and plist_path(bot).exists():
         systemctl_user("stop", plist_path(bot).name)   # ExecStop = kill-session
+    if host_os() == "linux" and is_bridge(bot) and has_systemd():
+        daemon_l, tui_l = codex_labels(bot)
+        for u in (unit_name(tui_l), unit_name(daemon_l)):
+            if (service_dir() / u).exists():
+                systemctl_user("stop", u)   # TUI ExecStop=kill-session, 데몬은 Restart=always라 유닛으로 내려야 안 되살아난다
     if host_os() == "linux" and is_bridge(bot) and not has_systemd():
         subprocess.run([find_tmux(), "kill-session", "-t", daemon_session(bot)], capture_output=True)
     subprocess.run([find_tmux(), "kill-session", "-t", bot["session"]], capture_output=True)
