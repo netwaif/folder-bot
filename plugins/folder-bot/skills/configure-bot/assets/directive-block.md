@@ -39,6 +39,7 @@ reply 도구는 없다(플러그인 미탑재). 첨부는 "첨부 파일(다운�
   ②이 스레드의 결론 중 메인 작업의 전제가 될 것이 있으면 폴더 SESSION.md **결정 기록에 한 줄만** 추가(허용된 유일한 폴더 SESSION.md 갱신)
   ③`bot-thread post $DISCORD_BOT_NAME $DISCORD_THREAD_ID "재시작 들어감 — 다음 메시지부터 새 세션이 기록을 읽고 이어갑니다"`
   ④`bot-thread rotate $DISCORD_BOT_NAME $DISCORD_THREAD_ID`. 이 세션은 곧 닫힌다.
+  **스레드 회전에는 웹훅 알림이 없다** — ③의 게시가 완료 신호다. 웹훅을 안내하지 마라.
 
 ### 주의
 - 이 폴더에서 로컬 터미널 세션과 봇 세션을 병행하면 같은 SESSION.md를 공유한다 —

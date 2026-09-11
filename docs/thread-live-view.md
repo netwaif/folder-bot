@@ -83,7 +83,7 @@
 
 A단계 실기 = 메인 "스레드로 해줘" → thread.sh open·안내 / 스레드 대화 → `threads/<id>/log.md` / "세션 마감하고 재시작해" → SESSION.md·rotate → 다음 메시지 `[재정박]`.
 컨테이너 codex는 샌드박스(bwrap)가 네임스페이스를 못 만들어 셸 명령마다 승인 프롬프트가 뜨므로 `.env.<이름>`에 `CODEX_TUI_SANDBOX=off`(codex-discord 0.1.15+)를 둔다 — 지금은 수동, botctl 자동 주입은 후속.
-WSL2 실기(9/12, `RESULT-wsl2-thread-A-20260911.md`) 발견: ① 브리지 엔진 `add`가 `enable --now`라 페어링 전에 데몬·TUI가 뜸(claude 엔진은 enable만) — **0.1.15에서 enable만으로 수정** ② codex 미신뢰 새 폴더의 "Do you trust the contents" 프롬프트를 tui-up.sh가 준비로 오판 → 더미 턴이 "No, quit" 선택 — **0.1.14 `ensure_codex_trust` 선등록 + codex-discord v0.1.20 tui-up.sh 감지로 수정** ③ `botctl start`가 유닛을 안 거쳐 TUI 유닛 `failed` 잔류 ④ (보고서 추정, 코드 대조 결과 기각) 데몬 재시작 시 창 없는 스레드 항목 폐기는 무해 — 다음 메시지가 `ensure`로 새 창을 띄우고 재정박은 `threads/<id>/SESSION.md` 존재로 판정하므로 항목 유무와 무관(실기에서도 폐기 뒤 (c) 2차가 새 창으로 정상 진행). 00:01:13 무응답은 4초 뒤 00:01:17 WSL VM 해체와 겹침 ⑤ 스레드 rotate엔 웹훅이 없는데 지침 문구가 웹훅 안내.
+WSL2 실기(9/12, `RESULT-wsl2-thread-A-20260911.md`) 발견: ① 브리지 엔진 `add`가 `enable --now`라 페어링 전에 데몬·TUI가 뜸(claude 엔진은 enable만) — **0.1.15에서 enable만으로 수정** ② codex 미신뢰 새 폴더의 "Do you trust the contents" 프롬프트를 tui-up.sh가 준비로 오판 → 더미 턴이 "No, quit" 선택 — **0.1.14 `ensure_codex_trust` 선등록 + codex-discord v0.1.20 tui-up.sh 감지로 수정** ③ `botctl start`가 유닛을 안 거쳐 TUI 유닛 `failed` 잔류 ④ (보고서 추정, 코드 대조 결과 기각) 데몬 재시작 시 창 없는 스레드 항목 폐기는 무해 — 다음 메시지가 `ensure`로 새 창을 띄우고 재정박은 `threads/<id>/SESSION.md` 존재로 판정하므로 항목 유무와 무관(실기에서도 폐기 뒤 (c) 2차가 새 창으로 정상 진행). 00:01:13 무응답은 4초 뒤 00:01:17 WSL VM 해체와 겹침 ⑤ 스레드 rotate엔 웹훅이 없는데 지침 문구가 웹훅 안내 — **0.1.16 지침 템플릿(웹훅 없음·rotate 뒤 게시 금지·화자 라벨 흉내 금지)으로 수정**.
 
 ## 검증 (완료 조건)
 1. 단위: bot-thread `kind` 파싱(가짜 curl), 맵 증분, Stop 훅 추출(픽스처 transcript: 도구 호출·중간 텍스트 섞인 턴에서 마지막 턴 텍스트만) — 기존 36 + 신규 통과.
