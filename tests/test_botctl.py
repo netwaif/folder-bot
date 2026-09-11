@@ -200,6 +200,7 @@ def test_codex_add_creates_env_and_plists(tmp_path):
     agents = (folder / "AGENTS.md").read_text()
     assert "<!-- store:discord-bot:start -->" in agents
     assert f"{bridge}/scripts/tui-restart.sh .env.b" in agents
+    assert f"{bridge}/scripts/thread.sh .env.b open" in agents and "DISCORD_THREAD_ID" in agents   # 스레드(0.1.12)
     assert not (folder / "CLAUDE.md").exists()
 
 
