@@ -57,9 +57,13 @@ def has_systemd() -> bool:
 
 
 def systemctl_user(*args) -> None:
-    """systemctl --user 호출. HARNESS_FAKE_SYSTEMCTL=1이면 무접촉(테스트). 바이너리 없으면 WARN 후 건너뜀."""
+    """systemctl --user 호출. HARNESS_FAKE_SYSTEMCTL=1이면 무접촉(테스트, 값이 경로면 호출을 그 파일에 기록). 바이너리 없으면 WARN 후 건너뜀."""
     import subprocess
-    if os.environ.get("HARNESS_FAKE_SYSTEMCTL"):
+    fake = os.environ.get("HARNESS_FAKE_SYSTEMCTL")
+    if fake:
+        if fake.startswith("/"):
+            with open(fake, "a") as f:
+                f.write(" ".join(args) + "\n")
         return
     try:
         subprocess.run(["systemctl", "--user", *args], capture_output=True)
@@ -473,8 +477,11 @@ def write_codex_units(bot: dict) -> list[str]:
             u.write_text(body)
             out.append(f"유닛 생성: {u}")
     systemctl_user("daemon-reload")
-    systemctl_user("enable", "--now", unit_name(tui_l))
-    systemctl_user("enable", "--now", unit_name(daemon_l))
+    # enable만 — 첫 기동은 start 명령의 몫(claude 엔진 write_unit·macOS plist와 동형). --now로 띄우면
+    # 페어링 전에 토큰 없는 데몬이 15초마다 재시작을 반복하고(Restart=always) TUI 유닛은 failed로 남는다
+    # (WSL2 실기 2026-09-12, add가 tui-up.sh 180초 대기를 안고 3분 걸림).
+    systemctl_user("enable", unit_name(tui_l))
+    systemctl_user("enable", unit_name(daemon_l))
     enable_linger()
     return out
 

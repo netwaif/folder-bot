@@ -526,6 +526,27 @@ def test_linux_codex_add_writes_units(tmp_path):
     assert not list(d.iterdir())
 
 
+def test_linux_codex_add_enables_without_now_and_start_starts_daemon(tmp_path):
+    """0.1.15: 브리지 엔진 add는 enable만(페어링 전 기동 금지, claude 엔진과 동형) — 기동은 start."""
+    folder = tmp_path / "w"; folder.mkdir()
+    bridge = _fake_bridge(tmp_path)
+    (bridge / "scripts/tui-up.sh").chmod(0o755)   # start가 실행한다
+    log = tmp_path / "systemctl.log"
+    env = dict(os.environ, HOME=str(tmp_path), HARNESS_OS="Linux", HARNESS_FAKE_SYSTEMCTL=str(log))
+    r = subprocess.run([sys.executable, str(BOTCTL), "add", "--name", "b", "--folder", str(folder),
+                        "--session", "b-bot", "--engine", "codex", "--bridge-dir", str(bridge)],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    calls = log.read_text().splitlines()
+    assert "enable com.codex-discord.b-tui.service" in calls
+    assert "enable com.codex-discord.b.service" in calls
+    assert not [c for c in calls if "--now" in c or c.startswith("start")], calls
+    r = subprocess.run([sys.executable, str(BOTCTL), "start", "--name", "b"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "start com.codex-discord.b.service" in log.read_text().splitlines()
+
+
 def test_bot_scripts_syntax_and_linux_branches():
     assets = BOTCTL.parent.parent / "assets"
     for s in ("bot-up.sh", "bot-restart.sh"):
