@@ -246,7 +246,10 @@ def test_add_skips_statusline_without_coach(tmp_path):
     run(tmp_path, "add", "--name", "b", "--folder", str(folder),
         "--session", "b-bot", "--no-autostart", "--no-directive-block")
     p = folder / ".claude/settings.local.json"
-    assert not p.exists()                                # 단독 설치 — 주입 없음
+    data = json.loads(p.read_text())                     # 단독 설치 — statusLine 주입 없음(스레드 훅만)
+    assert "statusLine" not in data
+    assert data["hooks"]["Stop"][0]["hooks"][0]["command"] == "bash ~/.local/bin/bot-thread-stop"
+    assert data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == "bash ~/.local/bin/bot-thread-route"
 
 
 def test_add_preserves_user_statusline(tmp_path):
@@ -522,3 +525,216 @@ def test_remove_block_deletes_file_it_created(tmp_path):
     r = run(tmp_path, "remove", "--name", "b")
     assert r.returncode == 0, r.stderr
     assert not (folder / "CLAUDE.md").exists() and "빈 파일 삭제" in r.stdout
+
+
+# ---------------------------------------------------------------- 스레드 라이브 뷰 (0.1.9)
+ASSETS = BOTCTL.parent.parent / "assets"
+THREAD_HOOK = "bash ~/.local/bin/bot-thread-stop"
+ROUTE_HOOK = "bash ~/.local/bin/bot-thread-route"
+
+
+def test_add_injects_thread_hook_preserving_user_hooks(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (folder / ".claude").mkdir()
+    user_hook = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}],
+                           "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo pre"}]}]}}
+    (folder / ".claude/settings.local.json").write_text(json.dumps(user_hook))
+    r = run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+            "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    assert r.returncode == 0, r.stderr
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    cmds = [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]]
+    assert cmds == ["echo mine", THREAD_HOOK]
+    assert data["hooks"]["PreToolUse"][0]["matcher"] == "Bash"
+    bots = json.loads((tmp_path / ".config/folder-bot/bots.json").read_text())
+    assert set(bots["b"]["thread_hooks"]) == {THREAD_HOOK, ROUTE_HOOK}
+    assert data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == ROUTE_HOOK
+    # 재실행해도 중복 주입 없음
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder),
+        "--session", "b-bot", "--no-autostart", "--no-directive-block")
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]] == ["echo mine", THREAD_HOOK]
+    # remove는 주입분만 걷는다
+    r = run(tmp_path, "remove", "--name", "b")
+    assert r.returncode == 0, r.stderr
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]] == ["echo mine"]
+    assert "UserPromptSubmit" not in data["hooks"]
+    assert (tmp_path / ".local/bin/bot-thread").exists() and (tmp_path / ".local/bin/bot-thread-route").exists()
+
+
+def _fake_curl(tmp_path, response: str):
+    """curl 대체 — 마지막 인자(URL)와 -d/-F 본문을 기록하고 고정 응답을 낸다."""
+    shim = tmp_path / "shim"; shim.mkdir(exist_ok=True)
+    log = tmp_path / "curl.log"
+    (shim / "curl").write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$*\" >> '{log}'\n"
+        f"cat <<'RESP'\n{response}\nRESP\n")
+    (shim / "curl").chmod(0o755)
+    return shim / "curl", log
+
+
+def _thread_env(tmp_path, bot_folder):
+    (tmp_path / ".config/folder-bot").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".config/folder-bot/bots.json").write_text(json.dumps(
+        {"b": {"engine": "claude", "folder": str(bot_folder), "session": "b-bot"}}))
+    st = bot_folder / ".discord-state"; st.mkdir(parents=True, exist_ok=True)
+    (st / ".env").write_text("DISCORD_BOT_TOKEN=tok123\n")
+    return st
+
+
+def test_bot_thread_kind_parses_and_caches(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    st = _thread_env(tmp_path, folder)
+    curl, log = _fake_curl(tmp_path, '{"id":"999","type":11,"parent_id":"555"}')
+    env = dict(os.environ, HOME=str(tmp_path), BOT_THREAD_CURL=str(curl), BOT_THREAD_TMUX="/bin/false")
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "kind", "b", "999"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "thread 555"
+    assert "Authorization: Bot tok123" in log.read_text()
+    assert json.loads((st / "threads.json").read_text())["999"]["parent_id"] == "555"
+    # 캐시 적중 — curl 재호출 없음
+    log.write_text("")
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "kind", "b", "999"],
+                       capture_output=True, text=True, env=env)
+    assert r.stdout.strip() == "thread 555" and log.read_text() == ""
+    # 일반 채널
+    curl2, _ = _fake_curl(tmp_path, '{"id":"1","type":0}')
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "kind", "b", "1"],
+                       capture_output=True, text=True, env=dict(env, BOT_THREAD_CURL=str(curl2)))
+    assert r.stdout.strip() == "channel"
+
+
+def test_bot_thread_post_chunks_and_stdin(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    _thread_env(tmp_path, folder)
+    curl, log = _fake_curl(tmp_path, '{"id":"m1"}')
+    env = dict(os.environ, HOME=str(tmp_path), BOT_THREAD_CURL=str(curl), BOT_THREAD_TMUX="/bin/false")
+    long = "가" * 2500 + "\n끝"
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "post", "b", "999", "-"],
+                       input=long, capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    calls = [l for l in log.read_text().splitlines() if "/channels/999/messages" in l]
+    assert len(calls) == 2                                  # 2000자 초과 → 2청크
+    assert all("Authorization: Bot tok123" in c for c in calls)
+
+
+def test_stop_hook_posts_last_turn_only(tmp_path):
+    fake_bt = tmp_path / "bot-thread"; out = tmp_path / "posted.txt"
+    fake_bt.write_text(f"#!/bin/bash\necho \"$1 $2 $3\" > '{out}'\ncat >> '{out}'\n"); fake_bt.chmod(0o755)
+    tr = tmp_path / "t.jsonl"
+    lines = [
+        {"type": "user", "message": {"content": "첫 질문"}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "옛 답변"}]}},
+        {"type": "user", "message": {"content": [{"type": "text", "text": "두 번째 질문"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "확인 중"}, {"type": "tool_use", "id": "x", "name": "Bash", "input": {}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "최종 답변"}]}},
+    ]
+    tr.write_text("\n".join(json.dumps(l, ensure_ascii=False) for l in lines) + "\n")
+    hook_in = json.dumps({"session_id": "s", "transcript_path": str(tr), "stop_hook_active": False})
+    env = dict(os.environ, DISCORD_THREAD_ID="999", DISCORD_BOT_NAME="b", BOT_THREAD_BIN=str(fake_bt))
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread-stop.sh")], input=hook_in,
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    posted = out.read_text()
+    assert posted.startswith("post b 999")
+    assert "확인 중" in posted and "최종 답변" in posted
+    assert "옛 답변" not in posted and "두 번째 질문" not in posted
+    # stop_hook_active면 게시 없음 / 환경변수 없으면 무동작
+    out.unlink()
+    subprocess.run(["bash", str(ASSETS / "bot-thread-stop.sh")],
+                   input=json.dumps({"transcript_path": str(tr), "stop_hook_active": True}),
+                   capture_output=True, text=True, env=env)
+    assert not out.exists()
+    subprocess.run(["bash", str(ASSETS / "bot-thread-stop.sh")], input=hook_in,
+                   capture_output=True, text=True, env=dict(os.environ, BOT_THREAD_BIN=str(fake_bt)))
+    assert not out.exists()
+
+
+def test_directive_block_refreshes_in_place(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (folder / "CLAUDE.md").write_text("# 내 규칙\n\n위쪽 원문\n")
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot", "--no-autostart")
+    md = folder / "CLAUDE.md"
+    cur = md.read_text() + "\n아래쪽 원문\n"
+    md.write_text(cur)
+    # 블록 본문을 옛 버전처럼 바꿔 놓고 add 재실행 → 마커 안쪽만 최신으로, 바깥은 그대로
+    stale = cur.replace("스레드 = 독립 세션", "옛 문구")
+    assert stale != cur
+    md.write_text(stale)
+    r = run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot", "--no-autostart")
+    assert "지침 블록 갱신" in r.stdout
+    assert md.read_text() == cur
+    # 동일하면 무변경
+    r = run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot", "--no-autostart")
+    assert "지침 블록" not in r.stdout and md.read_text() == cur
+
+
+def _fake_bot_thread(tmp_path, kind="thread 555"):
+    """bot-thread 대체 — 호출 기록을 남기고 kind/ensure/list/deliver/post에 고정 응답."""
+    log = tmp_path / "bt.log"; fake = tmp_path / "bot-thread"
+    fake.write_text(
+        "#!/bin/bash\n"
+        f"echo \"$1 $2 $3\" >> '{log}'\n"
+        "case \"$1\" in\n"
+        f"  kind) echo '{kind}';;\n"
+        "  ensure) echo 'b-t000999';;\n"
+        "  list) printf 'thread_id\\tsession_id\\twindow\\tlive\\tlast\\n'; printf '%s\\t\\tt000999\\tno\\t-\\n' \"$3\";;\n"
+        f"  deliver) cat >> '{log}';;\n"
+        "esac\n")
+    fake.chmod(0o755)
+    return fake, log
+
+
+def _route(tmp_path, prompt, cwd, env_extra=None):
+    hook_in = json.dumps({"session_id": "s", "prompt": prompt, "cwd": str(cwd)})
+    env = dict(os.environ, HOME=str(tmp_path), BOT_THREAD_BOTS_JSON=str(tmp_path / ".config/folder-bot/bots.json"))
+    env.update(env_extra or {})
+    return subprocess.run(["bash", str(ASSETS / "bot-thread-route.sh")], input=hook_in,
+                          capture_output=True, text=True, env=env)
+
+
+def test_route_hook_delegates_thread_and_blocks_main(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    st = _thread_env(tmp_path, folder)
+    (st / "access.json").write_text(json.dumps({"groups": {"1000": {}}}))
+    fake, log = _fake_bot_thread(tmp_path)
+    tag = '<channel source="plugin:discord:discord" chat_id="777000999" message_id="42" user="u" ts="t">'
+    r = _route(tmp_path, f"{tag}\n스레드 질문\n</channel>", folder, {"BOT_THREAD_BIN": str(fake)})
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    calls = log.read_text()
+    assert "kind b 777000999" in calls and "ensure b 777000999" in calls and "deliver b 777000999" in calls
+    assert "스레드 질문" in calls and 'chat_id="777000999"' in calls   # 태그째 전달
+    assert "post b 777000999" in calls                               # 첫 메시지 담당 안내
+    assert "b-t000999" in r.stderr
+
+
+def test_route_hook_passes_main_channel_dm_and_thread_sessions(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    st = _thread_env(tmp_path, folder)
+    (st / "access.json").write_text(json.dumps({"groups": {"1000": {}}}))
+    fake, log = _fake_bot_thread(tmp_path, kind="dm")
+    tag_main = '<channel source="plugin:discord:discord" chat_id="1000" message_id="1" user="u" ts="t">'
+    assert _route(tmp_path, f"{tag_main}\n안녕\n</channel>", folder, {"BOT_THREAD_BIN": str(fake)}).returncode == 0
+    assert not log.exists()                                          # 등록 채널은 bot-thread 호출도 없음
+    tag_dm = '<channel source="plugin:discord:discord" chat_id="2000" message_id="1" user="u" ts="t">'
+    assert _route(tmp_path, f"{tag_dm}\nDM\n</channel>", folder, {"BOT_THREAD_BIN": str(fake)}).returncode == 0
+    assert "ensure" not in log.read_text()                           # DM은 kind까지만
+    # 스레드 세션 안에서는 무동작 / 채널 태그 없는 일반 프롬프트도 무동작
+    assert _route(tmp_path, f"{tag_dm}\nx\n</channel>", folder, {"BOT_THREAD_BIN": str(fake), "DISCORD_THREAD_ID": "9"}).returncode == 0
+    assert _route(tmp_path, "그냥 로컬 프롬프트", folder, {"BOT_THREAD_BIN": str(fake)}).returncode == 0
+
+
+def test_route_hook_falls_back_to_main_on_ensure_failure(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    st = _thread_env(tmp_path, folder)
+    (st / "access.json").write_text(json.dumps({"groups": {"1000": {}}}))
+    fake = tmp_path / "bot-thread"
+    fake.write_text("#!/bin/bash\ncase \"$1\" in kind) echo 'thread 1000';; list) echo;; ensure) echo 'boom' >&2; exit 1;; esac\n")
+    fake.chmod(0o755)
+    tag = '<channel source="plugin:discord:discord" chat_id="777000999" message_id="42" user="u" ts="t">'
+    r = _route(tmp_path, f"{tag}\n질문\n</channel>", folder, {"BOT_THREAD_BIN": str(fake)})
+    assert r.returncode == 0 and "[스레드 라우팅 실패]" in r.stdout

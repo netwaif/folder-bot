@@ -93,5 +93,24 @@ if [[ " $* " != *" --permission-mode "* ]]; then
   set -- "$@" --permission-mode "${BOT_PERMISSION_MODE:-auto}"
 fi
 
+# --- 인증 캐시 오염 제거 (2026-09-11 컨테이너 실측) ---
+# 같은 폴더에서 토큰 없이 뜬 세션(configure 세션·스레드 세션)의 discord 플러그인이 "토큰 필요"로 종료하면
+# Claude Code(2.1.268 MCP 런타임 v2)가 ~/.claude/mcp-needs-auth-cache.json에 "인증 필요"로 전역 캐시하고,
+# 이후 봇 세션까지 플러그인 연결을 건너뛴다(/mcp: ✘ failed, 로그 파일도 없음). 봇 기동 직전에 그 항목만 걷는다.
+AUTH_CACHE="$HOME/.claude/mcp-needs-auth-cache.json"
+if [[ -f "$AUTH_CACHE" ]] && grep -q '"plugin:discord:discord"' "$AUTH_CACHE" 2>/dev/null; then
+  python3 - "$AUTH_CACHE" <<'PYEOF' && log "discord 플러그인 인증 캐시 항목 제거: $AUTH_CACHE"
+import json, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except (OSError, ValueError):
+    sys.exit(1)
+if d.pop("plugin:discord:discord", None) is None:
+    sys.exit(1)
+json.dump(d, open(p, "w"))
+PYEOF
+fi
+
 log "claude 기동: $CLAUDE_BIN $*"
 exec "$CLAUDE_BIN" "$@"

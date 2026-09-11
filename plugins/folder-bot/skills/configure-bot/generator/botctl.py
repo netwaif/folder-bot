@@ -141,7 +141,9 @@ def install_scripts() -> list[str]:
     out = []
     bin_dir = home() / ".local/bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for src_name, dst_name in (("bot-up.sh", "bot-up"), ("bot-restart.sh", "bot-restart")):
+    for src_name, dst_name in (("bot-up.sh", "bot-up"), ("bot-restart.sh", "bot-restart"),
+                               ("bot-thread.sh", "bot-thread"), ("bot-thread-stop.sh", "bot-thread-stop"),
+                               ("bot-thread-route.sh", "bot-thread-route")):
         src, dst = ASSETS / src_name, bin_dir / dst_name
         if not (dst.exists() and dst.read_bytes() == src.read_bytes()):
             shutil.copyfile(src, dst)
@@ -288,8 +290,14 @@ def install_block(bot: dict) -> list[str]:
     for k, v in render.items():
         body = body.replace(k, v)
     cur = md.read_text() if md.exists() else ""
-    if MARK_START in cur:
-        return []
+    if MARK_START in cur and MARK_END in cur:
+        # 블록이 이미 있으면 마커 안쪽만 최신 본문으로 교체(블록 밖 diff 0) — 플러그인 업그레이드가 지침을 따라가게
+        pre, rest = cur.split(MARK_START, 1)
+        old_body, post = rest.split(MARK_END, 1)
+        if old_body.strip("\n") == body.rstrip():
+            return []
+        md.write_text(f"{pre}{MARK_START}\n{body.rstrip()}\n{MARK_END}{post}")
+        return [f"{target} 지침 블록 갱신: {md}"]
     block = f"\n{MARK_START}\n{body.rstrip()}\n{MARK_END}\n"
     md.write_text(cur + block)
     return [f"{target} 지침 블록 설치: {md}"]
@@ -524,12 +532,73 @@ def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
     return lines
 
 
+# 스레드 라이브 뷰 훅 2종 — UserPromptSubmit: 스레드 메시지를 스레드 세션으로 라우팅(메인 처리 차단, exit 2) /
+# Stop: 스레드 세션의 답변을 REST로 게시. 둘 다 해당 안 되는 세션에서는 즉시 exit 0.
+THREAD_HOOKS = {"UserPromptSubmit": "bash ~/.local/bin/bot-thread-route",
+                "Stop": "bash ~/.local/bin/bot-thread-stop"}
+
+
+def write_thread_hooks(bot: dict) -> tuple[list[str], list[str]]:
+    """<폴더>/.claude/settings.local.json hooks.<이벤트>에 병합(기존 훅 보존). 주입 명령 목록을 반환해 remove가 회수한다."""
+    p = Path(bot["folder"]) / ".claude/settings.local.json"
+    try:
+        data = json.loads(p.read_text()) if p.exists() else {}
+    except ValueError:
+        return [f"[WARN] settings.local.json 파싱 실패 — 스레드 훅 미주입: {p}"], []
+    hooks = data.setdefault("hooks", {})
+    added = []
+    for event, cmd in THREAD_HOOKS.items():
+        groups = hooks.setdefault(event, [])
+        if any(h.get("command") == cmd for grp in groups for h in (grp.get("hooks") or [])):
+            continue
+        groups.append({"hooks": [{"type": "command", "command": cmd}]})
+        added.append(event)
+    if added:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return ([f"스레드 훅 주입({'·'.join(added)}): {p}"] if added else []), list(THREAD_HOOKS.values())
+
+
+def remove_thread_hooks(bot: dict) -> list[str]:
+    """주입 기록이 있을 때만, 정확히 그 명령의 훅 항목만 걷는다(사용자 훅 보존)."""
+    cmds = set(bot.get("thread_hooks") or [])
+    if not cmds:
+        return []
+    p = Path(bot["folder"]) / ".claude/settings.local.json"
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return []
+    hooks = data.get("hooks") or {}
+    changed = False
+    for event in list(hooks):
+        groups = hooks[event] or []
+        kept = []
+        for grp in groups:
+            hs = [h for h in (grp.get("hooks") or []) if h.get("command") not in cmds]
+            if hs:
+                kept.append({**grp, "hooks": hs})
+        if kept != groups:
+            changed = True
+            if kept:
+                hooks[event] = kept
+            else:
+                del hooks[event]
+    if not changed:
+        return []
+    if not hooks:
+        del data["hooks"]
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return [f"스레드 훅 회수: {p}"]
+
+
 def cmd_add(a) -> None:
     bots = load_bots()
     prior = bots.get(a.name) or {}
     entry = {"engine": a.engine, "folder": a.folder, "session": a.session}
-    if "statusline_cmd" in prior:
-        entry["statusline_cmd"] = prior["statusline_cmd"]  # 재등록에도 회수 기록 유지
+    for k in ("statusline_cmd", "thread_hooks"):
+        if k in prior:
+            entry[k] = prior[k]  # 재등록에도 회수 기록 유지
     if a.engine == "codex":
         entry["bridge_dir"] = a.bridge_dir or load_config().get(
             "codex_bridge_dir", "~/codex-discord")
@@ -550,6 +619,11 @@ def cmd_add(a) -> None:
         lines += sl_lines
         if injected:
             entry["statusline_cmd"] = injected
+            save_bots(bots)
+        th_lines, th_cmds = write_thread_hooks(bot)
+        lines += th_lines
+        if th_cmds:
+            entry["thread_hooks"] = th_cmds
             save_bots(bots)
     for line in lines:
         print(line)
@@ -599,6 +673,10 @@ def cmd_remove(a) -> None:
         return
     for line in remove_statusline(bot):
         print(line)
+    for line in remove_thread_hooks(bot):
+        print(line)
+    subprocess.run([str(home() / ".local/bin/bot-thread"), "gc", a.name, "--all"],
+                   capture_output=True)  # 스레드 창만 정리, threads.json은 보존(토큰 파일과 같은 취급)
     if host_os() == "linux":
         # disable만(--now 없이) — 세션 종료는 stop 명령의 몫(macOS remove와 동형: 파일만 걷는다)
         for line in remove_units([f"com.folder-bot.{bot['name']}"], [bot["session"]], stop=False):
@@ -805,6 +883,20 @@ def cmd_doctor(a) -> None:
         alive = subprocess.run([find_tmux(), "has-session", "-t", b["session"]],
                                capture_output=True).returncode == 0
         rep("OK" if alive else "WARN", f"tmux 세션 {'생존' if alive else '없음'}: {b['session']}")
+        if b["engine"] == "claude":
+            for tool in ("bot-thread", "bot-thread-stop", "bot-thread-route"):
+                if not (home() / ".local/bin" / tool).exists():
+                    rep("WARN", f"스레드 라이브 뷰 스크립트 없음: ~/.local/bin/{tool} (add 재실행)")
+            if not shutil.which("curl"):
+                rep("WARN", "curl 없음 — 스레드 답변 게시(REST) 불가")
+            if not b.get("thread_hooks"):
+                rep("WARN", "스레드 훅(라우팅·게시) 미주입 (add 재실행)")
+            tmap = Path(b["state_dir"]) / "threads.json"
+            if tmap.exists():
+                try:
+                    json.loads(tmap.read_text())
+                except ValueError:
+                    rep("WARN", f"threads.json 손상: {tmap}")
     sys.exit(1 if fails else 0)
 
 
