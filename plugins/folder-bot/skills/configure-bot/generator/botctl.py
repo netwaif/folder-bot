@@ -375,6 +375,10 @@ def write_codex_env(bot: dict) -> list[str]:
         "CHANNEL_IDS=",
         "TUI_TRIGGER_GATE=off",  # 전용 채널 — 호명 없이 모든 메시지에 응답
     ]
+    if engine == "codex" and host_os() == "linux" and not has_systemd():
+        # 도커 컨테이너: codex 샌드박스(bwrap)가 네임스페이스를 못 만들어 셸 명령마다 승인 프롬프트 → 무인 pane 정지
+        # (2026-09-11 실측). 컨테이너가 바깥 샌드박스이므로 codex 것을 끈다(codex-discord 0.1.15+ tui-up.sh).
+        lines += ["CODEX_TUI_SANDBOX=off"]
     p.write_text("\n".join(lines) + "\n")
     p.chmod(0o600)
     (Path(bot["bridge_dir"]) / f"data-{bot['name']}").mkdir(exist_ok=True)

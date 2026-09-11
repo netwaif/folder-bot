@@ -850,6 +850,7 @@ def test_linux_codex_add_without_systemd_uses_daemon_sidecar(tmp_path):
     assert "new-session -d -s b-daemon" in (d / "b-daemon.up.sh").read_text()
     assert (d / "b-bot.tmux-cmd").read_text().strip() == f"/bin/bash {bridge}/scripts/tui-up.sh .env.b"
     assert os.access(d / "b-bot.up.sh", os.X_OK) and os.access(d / "b-daemon.up.sh", os.X_OK)
+    assert "CODEX_TUI_SANDBOX=off" in (bridge / ".env.b").read_text()   # 0.1.13: 컨테이너 bwrap 불가 → 샌드박스 우회
     r = run_no_systemd(tmp_path, "doctor", "--name", "b")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "유닛 없음" not in r.stdout and "사이드카 없음" not in r.stdout
