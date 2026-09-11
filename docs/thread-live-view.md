@@ -14,17 +14,19 @@
   `message.content[].text`에 답변이 있다 → Stop 훅이 마지막 턴을 추출할 수 있다.
 - 봇 토큰으로 REST 게시는 게이트웨이 접속이 아니라 이중 접속 제약과 무관하다.
 
-## 구조
+## 구조 (0.1.9 최종 — 훅 기반 결정적 라우팅)
 ```
 디스코드 스레드 ──게이트웨이──▶ 메인 봇 세션(라이브 TUI, 플러그인 보유)
-                                │  chat_id ≠ 등록 채널 → bot-thread kind → 스레드
-                                │  bot-thread ensure <봇> <스레드ID> → tmux 창 + 세션명
-                                └─ SendMessage(세션명, 원문+메타) ─▶ 스레드 세션(라이브 TUI, 창 t<short>)
-                                                                        │ 답변 완료
-                                                                        └─ Stop 훅 → bot-thread post → REST → 스레드
+   UserPromptSubmit 훅(bot-thread-route): chat_id가 등록 채널이 아니면
+     → bot-thread kind(REST) → ensure(창·세션 보장) → fetch-attachments → deliver(스레드 pane에 bracketed paste)
+     → 첫 메시지면 담당 안내 post → exit 2 (메인은 이 메시지를 보지 않는다)
+                                                          스레드 세션(라이브 TUI, 창 t<short>, 플러그인 비활성)
+                                                            └─ Stop 훅(bot-thread-stop) → bot-thread post → REST → 스레드
 ```
-- **메인 봇 컨텍스트**에는 라우팅 한 줄씩만 남는다. 스레드 작업 내용은 각 스레드 세션에.
-- **스레드 세션**은 봇 폴더에서 뜨므로 폴더 CLAUDE.md·스킬·메모리가 그대로 적용된다.
+첫 설계는 메인 봇이 지침을 보고 SendMessage로 넘기는 것이었으나 1차 실기에서 메인이 지침을 무시하고 직접 답해 폐기.
+- **메인 봇 컨텍스트**에는 스레드 메시지가 도달하지 않는다(훅 exit 2). 스레드 작업 내용은 각 스레드 세션에.
+- **스레드 세션**은 봇 폴더에서 뜨므로 폴더 CLAUDE.md·스킬·메모리가 그대로 적용된다. `--settings` 파일로 discord 플러그인을 끈다
+  (토큰 없는 플러그인이 "인증 필요"를 전역 캐시해 메인 봇 재기동 연결을 막던 원인).
 - 세션 ID를 스레드별로 고정 배정(`--session-id <uuid>`, 이후 `--resume <uuid>`) → 봇 재시작·창 정리 뒤에도
   그 스레드의 맥락이 이어진다. 맵은 `<폴더>/.discord-state/threads.json`.
 
@@ -33,7 +35,10 @@
 | 명령 | 동작 |
 |---|---|
 | `kind <chat_id>` | REST 채널 조회 → `channel` / `thread <parent_id>` / `dm`. 결과는 threads.json에 캐시 |
-| `ensure <봇> <thread_id>` | 맵 조회(없으면 uuid 발급) → 봇 tmux 세션에 창 `t<스레드ID 끝 6자리>`가 없으면 생성:<br>`env DISCORD_THREAD_ID=<id> DISCORD_BOT_NAME=<봇> claude -n <봇>-t<short> --permission-mode auto (--session-id <uuid> | --resume <uuid>)`<br>세션 소켓(`cc-socks*/`)이 나타날 때까지 최대 30초 대기 → 세션명 출력 |
+| `ensure <봇> <thread_id>` | 맵 조회(없으면 uuid 발급) → 봇 tmux 세션에 창 `t<스레드ID 끝 6자리>`가 없으면(프로세스 트리에 claude 없음) 생성:<br>`claude -n <봇>-t<short> --permission-mode auto --settings <state>/thread-settings.json (--session-id <uuid> \| --resume <uuid>)`<br>입력 프롬프트(❯)가 뜰 때까지 최대 60초 대기 → 세션명 출력. 새 세션이면 `fresh=1` 표식 |
+| `deliver <봇> <thread_id> -` | stdin 원문을 스레드 pane에 bracketed paste + Enter(미제출 시 재전송) |
+| `fetch-attachments <봇> <chat_id> <message_id>` | 첨부를 `.discord-state/inbox/<mid>/`에 받고 경로 출력 |
+| `rotate <봇> <thread_id>` / `fresh` | 새 uuid로 회전(옛 ID previous)·창 닫기 / fresh 표식 1회 소거 |
 | `post <thread_id> (<text> \| --file <path>)` | 봇 폴더 `.discord-state/.env`의 토큰으로 `POST /channels/<id>/messages`(2000자 청크, 파일은 multipart) |
 | `open <channel_id> <이름> [message_id]` | REST로 스레드 생성 → thread_id 출력 (봇이 "스레드 파서 해줘"를 처리할 때) |
 | `gc [--idle-hours N]` | transcript mtime이 N시간(기본 6) 지난 창 닫기. 맵은 유지(다음 메시지에 resume). ensure가 호출 때마다 같이 돈다 |
@@ -48,21 +53,14 @@
   빈 답변이면 게시하지 않는다. 게시 실패는 stderr에만 남기고 exit 0(훅이 세션을 막지 않는다).
 
 ### 3. 지침 블록 (directive-block.md 증분)
-메인 봇 세션용:
-- `chat_id`가 등록 채널이 아니면 `bot-thread kind <chat_id>`로 판별. 스레드면 직접 답하지 않고
-  `bot-thread ensure <봇> <thread_id>`가 출력한 세션명으로 `SendMessage`한다.
-  메시지 본문 = `<discord-thread chat_id=… message_id=… user=… ts=…>원문</discord-thread>` + 첨부가 있으면
-  `download_attachment`로 받은 경로 목록. 그 스레드 첫 메시지엔 reply로 "이 스레드는 세션 `<이름>`이 담당(터미널: tmux 창 t<short>)" 한 줄.
-- "스레드 파서 해줘/이 건은 스레드로" → `bot-thread open <chat_id> <이름>` → ensure → 첫 메시지 전달.
-- DM은 기존 규칙대로(처리하지 않음).
-스레드 세션용(`DISCORD_THREAD_ID`가 있으면):
-- 이 세션은 스레드 `<id>` 전담. 답변은 Stop 훅이 자동 게시하므로 평소처럼 답하면 된다. reply 도구는 없다.
-  파일을 보내려면 `bot-thread post $DISCORD_THREAD_ID --file <경로>`.
-- 진행이 길면 중간 보고를 `bot-thread post`로 직접 올려도 된다.
+메인 봇 세션용: 스레드 메시지는 훅이 처리하므로 규칙은 셋뿐 — "[스레드 라우팅 실패]" 접두가 붙어 오면 그때만 직접 답한다 /
+"스레드 파서 해줘"는 `bot-thread open` / 스레드 관련 질문은 `threads/*/log.md`·SESSION.md·`fetch_messages`로 찾아 답한다.
+스레드 세션용(`DISCORD_THREAD_ID`가 있으면): 답변은 Stop 훅이 자동 게시(reply 도구 없음), 파일은 `bot-thread post --file`,
+정본은 `threads/$DISCORD_THREAD_ID/SESSION.md`, 마감 신호 시 4단계(갱신→폴더 SESSION.md 결정 한 줄→게시→rotate).
 
 ### 4. botctl 변경
-- `install_scripts`: bot-thread·bot-thread-stop 추가.
-- `add`: settings.local.json에 Stop 훅 병합(기존 hooks 보존, 주입 기록은 bots.json의 `thread_hook` 필드).
+- `install_scripts`: bot-thread·bot-thread-stop·bot-thread-route·bot-thread-compact.
+- `add`: settings.local.json hooks에 UserPromptSubmit·Stop·PreCompact 병합(기존 hooks 보존, 주입 기록은 bots.json `thread_hooks`). bot-up이 기동 직전 `mcp-needs-auth-cache.json`의 discord 항목을 걷는다.
 - `remove`: 훅 회수, 스레드 창 정리(`gc --all`), threads.json은 보존(토큰 파일과 같은 취급).
 - `doctor`: bot-thread 설치·훅 등록·`curl` 존재·threads.json 파싱·고아 창(맵에 없는 t* 창) 점검.
 
