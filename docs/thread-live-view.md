@@ -65,7 +65,9 @@
 - `doctor`: bot-thread 설치·훅 등록·`curl` 존재·threads.json 파싱·고아 창(맵에 없는 t* 창) 점검.
 
 ## 범위 밖 (이번 반복에서 하지 않는 것, 처음부터 명시)
-- **codex·agy 스레드 라이브**: 세션 간 메시지가 없어 스레드마다 TUI pane + 붙여넣기 + tail이 필요하다.
+- **codex·agy 스레드 라이브**: B단계 완료(codex-discord 0.1.10, 2026-09-11) — 데몬이 스레드마다 창 `t<끝6자리>`를 띄우고
+  스레드별 tail로 게시(`scripts/tui-up.sh --window`, `data-<이름>/threads.json`). A단계(메인의 스레드 생성·threads/<ID>/SESSION.md·log.md·회전·재개)는 후속.
+  원래 메모: 세션 간 메시지가 없어 스레드마다 TUI pane + 붙여넣기 + tail이 필요하다.
   codex-discord의 인스턴스당 pane 1개 장치를 스레드당 N개로 넓히는 별도 작업(2차). 3엔진 동일 동작 규칙상
   반드시 뒤따른다.
 - **메인 대화 복제로 스레드 시작**(`--resume <메인> --fork-session`, `/branch` 대응): 메인 세션 ID를
@@ -76,8 +78,8 @@
 | | 맥 | 리눅스(systemd) | 리눅스 컨테이너 | 윈도우(WSL2) |
 |---|---|---|---|---|
 | Claude Code | 같은 코드(bash·curl·tmux·claude) | 같음 | 같음(UDS 폴백 확인) | 같음 |
-| Codex | 2차 | 2차 | 2차 | 2차 |
-| Gemini(agy) | 2차 | 2차 | 2차 | 2차 |
+| Codex | B(codex-discord 0.1.10, 실기는 한도 해제 후) | 같음 | 같음 | 같음 |
+| Gemini(agy) | B 됨(맥 실기 9/11) | 같음 | B 됨(컨테이너 실기 9/11) | 같음 |
 
 ## 검증 (완료 조건)
 1. 단위: bot-thread `kind` 파싱(가짜 curl), 맵 증분, Stop 훅 추출(픽스처 transcript: 도구 호출·중간 텍스트 섞인 턴에서 마지막 턴 텍스트만) — 기존 36 + 신규 통과.
