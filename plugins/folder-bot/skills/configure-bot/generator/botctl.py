@@ -7,6 +7,7 @@ launchctl bootout은 실행하지 않는다 — 파일 생성/삭제 + tmux kill
 OS 분기: macOS=LaunchAgent plist, 리눅스(VPS·WSL2)=systemd 사용자 유닛(하네스 6차 2026-09-07 패턴).
   리눅스 유닛은 com.folder-bot.<이름>.service(라벨 동일 — agentlayer wiring 매칭용) +
   <세션>.tmux-cmd·<세션>.up.sh 사이드카(bot-restart.sh·agentlayer가 읽음).
+엔진: claude(discord 플러그인) / codex·agy(codex-discord 브리지 인스턴스 — systemd 없으면 데몬도 tmux 세션 <이름>-daemon).
 """
 from __future__ import annotations  # macOS 기본 python3(3.9)에서 `X | None` 표기 크래시 방지 — 8/6 실측
 
@@ -127,7 +128,7 @@ def resolve_bot(name: str) -> dict:
     b.setdefault("state_dir", str(Path(b["folder"]) / ".discord-state"))
     b.setdefault("autostart", True)
     b.setdefault("directive_block", True)
-    if b["engine"] == "codex":
+    if b["engine"] in BRIDGE_ENGINES:
         b.setdefault("bridge_dir",
                      load_config().get("codex_bridge_dir", "~/codex-discord"))
         b["bridge_dir"] = str(Path(b["bridge_dir"]).expanduser())
@@ -274,11 +275,25 @@ MARK_START = "<!-- store:discord-bot:start -->"
 MARK_END = "<!-- store:discord-bot:end -->"
 
 
+BRIDGE_ENGINES = ("codex", "agy")   # codex-discord 브리지로 뜨는 엔진(agy = Antigravity CLI, 브리지 0.1.9+)
+# agy 규칙 위치(agy 1.2.0 내장 agy-customizations 스킬 문서): GEMINI.md·AGENTS.md(디렉터리 계층, 프런트매터 없음)
+# 또는 `.agents/rules/*.md`(프런트매터 trigger: always_on 이어야 무조건 로드). 사용자의 AGENTS.md/GEMINI.md를
+# 건드리지 않도록 전용 always_on 규칙 파일을 쓴다.
+AGY_RULE_FILE = ".agents/rules/discord-bot.md"
+AGY_RULE_HEADER = "---\ntrigger: always_on\n---\n"
+
+
+def is_bridge(bot: dict) -> bool:
+    return bot["engine"] in BRIDGE_ENGINES
+
+
 def _directive_target(bot: dict) -> tuple[str, str, dict]:
     """엔진별 (지침 파일명, asset 파일명, 렌더 치환값)."""
-    if bot["engine"] == "codex":
-        return ("AGENTS.md", "directive-block-codex.md",
-                {"{BRIDGE_DIR}": bot["bridge_dir"], "{ENV_FILE}": f".env.{bot['name']}"})
+    if is_bridge(bot):
+        render = {"{BRIDGE_DIR}": bot["bridge_dir"], "{ENV_FILE}": f".env.{bot['name']}",
+                  "{ENGINE}": bot["engine"]}
+        return (AGY_RULE_FILE if bot["engine"] == "agy" else "AGENTS.md",
+                "directive-block-codex.md", render)
     return ("CLAUDE.md", "directive-block.md", {})
 
 
@@ -289,7 +304,7 @@ def install_block(bot: dict) -> list[str]:
     body = (ASSETS / asset).read_text()
     for k, v in render.items():
         body = body.replace(k, v)
-    cur = md.read_text() if md.exists() else ""
+    cur = md.read_text() if md.exists() else (AGY_RULE_HEADER if target == AGY_RULE_FILE else "")
     if MARK_START in cur and MARK_END in cur:
         # 블록이 이미 있으면 마커 안쪽만 최신 본문으로 교체(블록 밖 diff 0) — 플러그인 업그레이드가 지침을 따라가게
         pre, rest = cur.split(MARK_START, 1)
@@ -299,6 +314,7 @@ def install_block(bot: dict) -> list[str]:
         md.write_text(f"{pre}{MARK_START}\n{body.rstrip()}\n{MARK_END}{post}")
         return [f"{target} 지침 블록 갱신: {md}"]
     block = f"\n{MARK_START}\n{body.rstrip()}\n{MARK_END}\n"
+    md.parent.mkdir(parents=True, exist_ok=True)
     md.write_text(cur + block)
     return [f"{target} 지침 블록 설치: {md}"]
 
@@ -315,7 +331,7 @@ def remove_block(bot: dict) -> list[str]:
     pre, rest = cur.split(MARK_START, 1)
     _, post = rest.split(MARK_END, 1)
     rest = pre.rstrip("\n") + ("\n" if pre.strip() else "") + post.lstrip("\n")
-    if not rest.strip():
+    if not rest.strip() or rest.strip() == AGY_RULE_HEADER.strip():
         # 블록만 있던 파일(원래 없던 폴더에 add가 만든 것) — 빈 파일을 남기지 않는다
         md.unlink()
         return [f"{target} 지침 블록 제거 후 빈 파일 삭제: {md}"]
@@ -344,13 +360,15 @@ def write_codex_env(bot: dict) -> list[str]:
     p = codex_env_path(bot)
     if p.exists():
         return []
-    codex_bin = shutil.which("codex") or ""
+    engine = bot["engine"]
+    eng_bin = shutil.which(engine) or ""
     lines = [
-        f"# folder-bot codex 봇 인스턴스: {bot['name']}",
+        f"# folder-bot {engine} 봇 인스턴스: {bot['name']}",
         "DISCORD_TOKEN=",
         "ALLOWED_USER_IDS=",
-        f"CODEX_WORKDIR={bot['folder']}",
-        *( [f"CODEX_BIN={codex_bin}"] if codex_bin else [] ),
+        f"CODEX_WORKDIR={bot['folder']}",   # 엔진 무관 키 이름 — 브리지·관제탑(agentlayer) 매칭 키
+        *( ["ENGINE=agy"] if engine == "agy" else [] ),
+        *( [f"{'AGY_BIN' if engine == 'agy' else 'CODEX_BIN'}={eng_bin}"] if eng_bin else [] ),
         f"DATA_DIR=data-{bot['name']}",
         f"TUI_PANE={bot['session']}:0.0",
         "TUI_CHANNEL_ID=",
@@ -367,6 +385,31 @@ def codex_labels(bot: dict) -> tuple[str, str]:
     return f"com.codex-discord.{bot['name']}", f"com.codex-discord.{bot['name']}-tui"
 
 
+def daemon_session(bot: dict) -> str:
+    """systemd 없음 폴백의 데몬 tmux 세션명(관제탑은 kind 없음으로 무시)."""
+    return f"{bot['name']}-daemon"
+
+
+def write_codex_sidecars(bot: dict, node: str, path_env: str) -> list[str]:
+    """systemd 없음(컨테이너): 유닛 대신 사이드카만 — 데몬은 tmux 세션 <이름>-daemon, TUI는 tui-up.sh.
+    데몬 pane 루트는 셸이어야 한다(exec 없이 node를 자식으로 — 관제탑이 브리지 자식 codex/agy를
+    유령 레코드로 잡지 않게, 2026-09-11 agentlayer 접점 확인). 재기동은 <세션>.up.sh(bot-restart·외부 감시자)."""
+    bd, name = bot["bridge_dir"], bot["name"]
+    daemon_l, _ = codex_labels(bot)
+    ds = daemon_session(bot)
+    # 끝의 `exit $?`는 bash 5.1+가 -c 목록의 마지막 명령을 exec로 바꾸는 최적화를 막는다(그러면 pane 루트가 node가 됨).
+    cmd = (f"/bin/bash -lc 'cd {bd}; export PATH=\"{path_env}\"; "
+           f"{node} --env-file=.env.{name} src/index.mjs >> logs/daemon-{name}.log 2>&1; exit $?'")
+    write_tmux_unit(daemon_l, ds, f"folder-bot {bot['engine']} daemon: name={name}", cmd)
+    cmd_file, up = sidecar_paths(bot["session"])
+    tui = f"/bin/bash {bd}/scripts/tui-up.sh .env.{name}"
+    cmd_file.write_text(tui + "\n")
+    up.write_text(f"#!/bin/bash\nexec {tui}\n")
+    up.chmod(0o755)
+    return [f"[WARN] systemd 없음 — 유닛 생략, 사이드카만: {sidecar_paths(ds)[0]}·{cmd_file}"
+            f" (데몬은 tmux 세션 {ds}, 자동 기동 없음 — 재기동은 사이드카 up.sh·외부 감시자 몫)"]
+
+
 def write_codex_units(bot: dict) -> list[str]:
     """리눅스: 데몬 = node 상주(simple, Restart=always ↔ launchd KeepAlive), TUI = tmux 세션 oneshot.
     codex-discord scripts/install.sh 리눅스 분기와 동형."""
@@ -380,6 +423,8 @@ def write_codex_units(bot: dict) -> list[str]:
     path_env = f"{Path(node).parent}:/usr/local/bin:/usr/bin:/bin"
     bd = bot["bridge_dir"]
     Path(bd, "logs").mkdir(exist_ok=True)
+    if not has_systemd():
+        return write_codex_sidecars(bot, node, path_env)
     out = []
     daemon_body = (f"# folder-bot codex daemon: name={bot['name']} folder={bot['folder']}\n"
                    f"[Unit]\nDescription={daemon_l} (Discord ↔ codex 브리지)\nAfter=network-online.target\n\n"
@@ -515,9 +560,9 @@ def remove_statusline(bot: dict) -> list[str]:
 def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
     """add 후 설치 일괄 수행 — 엔진별 스크립트·plist·지침 블록."""
     lines = []
-    if bot["engine"] == "codex":
+    if is_bridge(bot):
         if not Path(bot["bridge_dir"]).is_dir():
-            sys.exit(f"오류: codex 브리지 폴더 없음: {bot['bridge_dir']}\n"
+            sys.exit(f"오류: codex-discord 브리지 폴더 없음: {bot['bridge_dir']}\n"
                      "github.com/netwaif/codex-discord 를 받아 설치하거나 "
                      "config.json의 codex_bridge_dir를 지정하세요")
         lines += write_codex_env(bot)
@@ -560,6 +605,52 @@ def write_thread_hooks(bot: dict) -> tuple[list[str], list[str]]:
     return ([f"스레드 훅 주입({'·'.join(added)}): {p}"] if added else []), list(THREAD_HOOKS.values())
 
 
+# auto 권한 분류기가 지침의 `bot-restart`·`bot-thread` 실행을 막은 실측(2026-09-11 컨테이너) — 폴더 로컬 허용 규칙
+PERM_ALLOW = ["Bash(bot-restart:*)", "Bash(bot-thread:*)"]
+
+
+def write_permissions(bot: dict) -> tuple[list[str], list[str]]:
+    """<폴더>/.claude/settings.local.json permissions.allow에 병합(기존 규칙 보존). 주입 목록을 반환해 remove가 회수한다."""
+    p = Path(bot["folder"]) / ".claude/settings.local.json"
+    try:
+        data = json.loads(p.read_text()) if p.exists() else {}
+    except ValueError:
+        return [f"[WARN] settings.local.json 파싱 실패 — 권한 미주입: {p}"], []
+    allow = data.setdefault("permissions", {}).setdefault("allow", [])
+    added = [r for r in PERM_ALLOW if r not in allow]
+    if added:
+        allow.extend(added)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    recorded = sorted(set(bot.get("perm_allow") or []) | set(added))
+    return ([f"권한 주입({'·'.join(added)}): {p}"] if added else []), recorded
+
+
+def remove_permissions(bot: dict) -> list[str]:
+    """주입 기록이 있을 때만, 정확히 그 규칙만 걷는다(사용자 규칙 보존)."""
+    rules = set(bot.get("perm_allow") or [])
+    if not rules:
+        return []
+    p = Path(bot["folder"]) / ".claude/settings.local.json"
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return []
+    perms = data.get("permissions") or {}
+    allow = perms.get("allow") or []
+    kept = [r for r in allow if r not in rules]
+    if kept == allow:
+        return []
+    if kept:
+        perms["allow"] = kept
+    else:
+        perms.pop("allow", None)
+    if not perms:
+        data.pop("permissions", None)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return [f"권한 회수: {p}"]
+
+
 def remove_thread_hooks(bot: dict) -> list[str]:
     """주입 기록이 있을 때만, 정확히 그 명령의 훅 항목만 걷는다(사용자 훅 보존)."""
     cmds = set(bot.get("thread_hooks") or [])
@@ -597,10 +688,10 @@ def cmd_add(a) -> None:
     bots = load_bots()
     prior = bots.get(a.name) or {}
     entry = {"engine": a.engine, "folder": a.folder, "session": a.session}
-    for k in ("statusline_cmd", "thread_hooks"):
+    for k in ("statusline_cmd", "thread_hooks", "perm_allow"):
         if k in prior:
             entry[k] = prior[k]  # 재등록에도 회수 기록 유지
-    if a.engine == "codex":
+    if a.engine in BRIDGE_ENGINES:
         entry["bridge_dir"] = a.bridge_dir or load_config().get(
             "codex_bridge_dir", "~/codex-discord")
     if a.no_remote_control:
@@ -626,6 +717,11 @@ def cmd_add(a) -> None:
         if th_cmds:
             entry["thread_hooks"] = th_cmds
             save_bots(bots)
+        pm_lines, pm_rules = write_permissions(bot)
+        lines += pm_lines
+        if pm_rules:
+            entry["perm_allow"] = pm_rules
+            save_bots(bots)
     for line in lines:
         print(line)
     print(f"등록됨: {a.name}")
@@ -648,16 +744,17 @@ def cmd_remove(a) -> None:
     save_bots(bots)
     for line in remove_block(bot):
         print(line)
-    if bot["engine"] == "codex" and host_os() == "linux":
+    if is_bridge(bot) and host_os() == "linux":
         daemon_l, tui_l = codex_labels(bot)
-        for line in remove_units([daemon_l], [], stop=True):     # 데몬은 Restart=always라 내리고 지운다
+        subprocess.run([find_tmux(), "kill-session", "-t", daemon_session(bot)], capture_output=True)
+        for line in remove_units([daemon_l], [daemon_session(bot)], stop=True):   # 데몬은 Restart=always라 내리고 지운다
             print(line)
         subprocess.run([find_tmux(), "kill-session", "-t", bot["session"]], capture_output=True)
         for line in remove_units([tui_l], [bot["session"]], stop=False):
             print(line)
         print(f"제거됨: {a.name} (토큰 파일 보존: {codex_env_path(bot)})")
         return
-    if bot["engine"] == "codex":
+    if is_bridge(bot):
         # 데몬은 node 직속 job이라 bootout 안전(tmux 서버를 띄우는 job이 아님).
         # KeepAlive라 파일만 지우면 되살아나므로 내리고 지운다. TUI는 kill-session.
         uid = os.getuid()
@@ -675,6 +772,8 @@ def cmd_remove(a) -> None:
     for line in remove_statusline(bot):
         print(line)
     for line in remove_thread_hooks(bot):
+        print(line)
+    for line in remove_permissions(bot):
         print(line)
     subprocess.run([str(home() / ".local/bin/bot-thread"), "gc", a.name, "--all"],
                    capture_output=True)  # 스레드 창만 정리, threads.json은 보존(토큰 파일과 같은 취급)
@@ -705,7 +804,7 @@ def cmd_pair(a) -> None:
             tok_file.unlink()
             print(f"토큰 파일 삭제: {tok_file}")
 
-    if bot["engine"] == "codex":
+    if is_bridge(bot):
         p = codex_env_path(bot)
         if not p.exists():
             sys.exit(f"오류: {p} 없음 — add를 먼저 실행")
@@ -743,7 +842,7 @@ def cmd_start(a) -> None:
     import subprocess
     bot = resolve_bot(a.name)
     tmux = find_tmux()
-    if bot["engine"] == "codex":
+    if is_bridge(bot):
         tui_up = f"{bot['bridge_dir']}/scripts/tui-up.sh"
         if a.dry_run:
             print(f"{tui_up} .env.{bot['name']} + launchctl bootstrap "
@@ -755,8 +854,16 @@ def cmd_start(a) -> None:
             sys.exit(f"오류: TUI 기동 실패 — {bot['bridge_dir']}/logs 확인")
         if host_os() == "linux":
             daemon_l, _ = codex_labels(bot)
-            systemctl_user("start", unit_name(daemon_l))
-            print(f"데몬 기동: {daemon_l} (systemd --user)")
+            if has_systemd():
+                systemctl_user("start", unit_name(daemon_l))
+                print(f"데몬 기동: {daemon_l} (systemd --user)")
+                return
+            ds = daemon_session(bot)
+            if subprocess.run([tmux, "has-session", "-t", ds], capture_output=True).returncode == 0:
+                print(f"데몬 이미 실행 중: {ds}")
+                return
+            subprocess.run(["/bin/bash", str(sidecar_paths(ds)[1])], check=True)
+            print(f"데몬 기동: tmux 세션 {ds} (systemd 없음 — 사이드카 up.sh 경유)")
             return
         uid = os.getuid()
         label = f"com.codex-discord.{bot['name']}"
@@ -788,6 +895,8 @@ def cmd_stop(a) -> None:
     bot = resolve_bot(a.name)
     if host_os() == "linux" and bot["engine"] == "claude" and plist_path(bot).exists():
         systemctl_user("stop", plist_path(bot).name)   # ExecStop = kill-session
+    if host_os() == "linux" and is_bridge(bot) and not has_systemd():
+        subprocess.run([find_tmux(), "kill-session", "-t", daemon_session(bot)], capture_output=True)
     subprocess.run([find_tmux(), "kill-session", "-t", bot["session"]], capture_output=True)
     print(f"중지: {bot['session']}")
 
@@ -817,9 +926,13 @@ def cmd_doctor(a) -> None:
                 fails += 1
             print(f"[{level}] {name}: {msg}")
 
-        if b["engine"] == "codex":
+        if is_bridge(b):
             la = home() / "Library/LaunchAgents"
-            if b["autostart"] and host_os() == "linux":
+            if b["autostart"] and host_os() == "linux" and not has_systemd():
+                for sess in (daemon_session(b), b["session"]):
+                    if not sidecar_paths(sess)[1].exists():
+                        rep("WARN", f"사이드카 없음(add 재실행): {sidecar_paths(sess)[1]}")
+            elif b["autostart"] and host_os() == "linux":
                 for label in codex_labels(b):
                     if not (service_dir() / unit_name(label)).exists():
                         rep("FAIL", f"유닛 없음: {service_dir() / unit_name(label)}")
@@ -909,8 +1022,8 @@ def main() -> None:
     ap.add_argument("--name", required=True)
     ap.add_argument("--folder", required=True)
     ap.add_argument("--session", required=True)
-    ap.add_argument("--engine", choices=["claude", "codex"], default="claude")
-    ap.add_argument("--bridge-dir", help="codex 전용: codex-discord 브리지 폴더")
+    ap.add_argument("--engine", choices=["claude", "codex", "agy"], default="claude")
+    ap.add_argument("--bridge-dir", help="codex·agy 전용: codex-discord 브리지 폴더")
     ap.add_argument("--remote-control")
     ap.add_argument("--no-remote-control", action="store_true")
     ap.add_argument("--no-directive-block", action="store_true")

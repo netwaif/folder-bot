@@ -153,21 +153,29 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
   접두로 그 파일을 먼저 읽음). compact가 돌면 PreCompact 훅이 스레드에 알린다. 메인 세션은 스레드 내용을 모르므로
   스레드 관련 질문엔 `threads/*/log.md`(자동 한 줄 요약)·SESSION.md·`fetch_messages`로 찾아 답한다.
 - 설계·검증 기록: `docs/thread-live-view.md`. codex·agy 엔진의 스레드 라이브는 2차(미지원).
+- add는 폴더 `.claude/settings.local.json`의 `permissions.allow`에 `Bash(bot-restart:*)`·`Bash(bot-thread:*)`를
+  주입한다(auto 권한 분류기가 지침의 재시작·스레드 명령을 막은 실측, 2026-09-11 컨테이너). remove가 그 규칙만 회수.
 
-## codex 엔진 봇 (폴더가 codex로 운용되는 경우)
+## codex·agy 엔진 봇 (폴더가 codex 또는 agy로 운용되는 경우)
 
-폴더를 codex(코덱스 CLI) 세션으로 쓰는 사용자는 `--engine codex`로 추가한다.
-전제: codex-discord 브리지(github.com/netwaif/codex-discord)가 설치돼 있어야 하며,
+폴더를 codex(코덱스 CLI) 세션으로 쓰는 사용자는 `--engine codex`, agy(Antigravity CLI, gemini)는 `--engine agy`로 추가한다.
+전제: codex-discord 브리지(github.com/netwaif/codex-discord, agy는 v0.1.9+)가 설치돼 있어야 하며,
 경로는 `~/.config/folder-bot/config.json`의 `codex_bridge_dir`(또는 `--bridge-dir`)로 지정.
 
 ```bash
-python3 "<이 스킬 폴더>/generator/botctl.py" add --name <이름> --folder <폴더> --session <세션명> --engine codex
+python3 "<이 스킬 폴더>/generator/botctl.py" add --name <이름> --folder <폴더> --session <세션명> --engine codex   # 또는 --engine agy
 python3 "<이 스킬 폴더>/generator/botctl.py" pair --name <이름> --token-file <폴더>/.bot-token --user-id <ID> --channel-id <ID>
 python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
 ```
 
-- add = 브리지 인스턴스(.env.<이름>·data-<이름>) + 데몬·TUI plist(리눅스: systemd 유닛) + **AGENTS.md** 지침 블록
+- add = 브리지 인스턴스(.env.<이름>·data-<이름>) + 데몬·TUI plist(리눅스: systemd 유닛) + 지침 블록
   (전용 채널이라 호명 게이트 off — `TUI_TRIGGER_GATE=off`).
+  - 지침 파일: codex = **AGENTS.md** / agy = **`.agents/rules/discord-bot.md`**(프런트매터 `trigger: always_on`.
+    agy는 GEMINI.md·AGENTS.md·`.agents/rules/*.md` 셋을 읽으며, 사용자 파일을 안 건드리려 전용 규칙 파일을 쓴다). `.env.<이름>`은 agy면
+    `ENGINE=agy`·`AGY_BIN`, codex면 `CODEX_BIN`. `CODEX_WORKDIR`는 엔진 무관 키(브리지·관제탑 매칭 키).
+  - **systemd 없음(도커 컨테이너)**: 유닛 대신 사이드카만 — 데몬은 tmux 세션 `<이름>-daemon`
+    (`~/.config/systemd/user/<이름>-daemon.tmux-cmd`·`.up.sh`), TUI는 `<세션>.tmux-cmd`·`.up.sh`(tui-up.sh).
+    start가 사이드카 up.sh로 둘 다 띄우고 stop·remove가 둘 다 내린다. 자동 기동 없음 — 재기동은 외부 감시자 몫.
 - **리모트 컨트롤 질문은 생략한다** — claude 전용 개념(claude.ai 세션 진입)이라 codex 엔진
   기동 명령에는 쓰이지 않는다(botctl이 값을 무시).
 - start = TUI 기동(tui-up.sh, "준비 완료" 확인) + 데몬 bootstrap. 연결 판정은 브리지 로그

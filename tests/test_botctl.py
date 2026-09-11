@@ -443,7 +443,8 @@ def test_linux_doctor_checks_unit_and_cache_log(tmp_path):
 def run_no_systemd(env_home, *args):
     """systemctl·loginctl 부재 시뮬레이션(도커 컨테이너): PATH에 tmux만, FAKE 해제 → 실호출 경로가 FileNotFoundError를 맞는다."""
     bindir = env_home / "bin"; bindir.mkdir(exist_ok=True)
-    (bindir / "tmux").exists() or (bindir / "tmux").symlink_to(shutil.which("tmux"))
+    for tool in ("tmux", "node"):   # node = codex 데몬 폴백(find_node)
+        (bindir / tool).exists() or (bindir / tool).symlink_to(shutil.which(tool))
     env = {k: v for k, v in os.environ.items() if k != "HARNESS_FAKE_SYSTEMCTL"}
     env.update(HOME=str(env_home), HARNESS_OS="Linux", PATH=str(bindir))
     return subprocess.run([sys.executable, str(BOTCTL), *args],
@@ -802,3 +803,79 @@ def test_compact_hook_posts_notice_only_in_thread_session(tmp_path):
     subprocess.run(["bash", str(ASSETS / "bot-thread-compact.sh")], input="{}", capture_output=True, text=True,
                    env=dict(os.environ, BOT_THREAD_BIN=str(fake)))
     assert not out.exists()
+
+
+# ---------------------------------------------------------------- 0.1.11: agy 엔진 · systemd 없음 codex 폴백 · permissions.allow
+
+def test_agy_add_writes_env_and_rules_file(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    bridge = _fake_bridge(tmp_path)
+    # 리눅스 경로로 검증 — 맥 codex remove는 launchctl bootout 실호출(conftest가 차단), plist·유닛 생성은 codex와 같은 코드
+    r = run_linux(tmp_path, "add", "--name", "g", "--folder", str(folder), "--session", "g-bot",
+                  "--engine", "agy", "--bridge-dir", str(bridge))
+    assert r.returncode == 0, r.stderr
+    env = (bridge / ".env.g").read_text()
+    assert "ENGINE=agy" in env and f"CODEX_WORKDIR={folder}" in env and "CODEX_BIN=" not in env
+    assert "TUI_PANE=g-bot:0.0" in env and (bridge / "data-g").is_dir()
+    d = tmp_path / ".config/systemd/user"
+    assert (d / "com.codex-discord.g.service").exists() and (d / "com.codex-discord.g-tui.service").exists()
+    # 지침은 agy 규칙 파일(.agents/rules, always_on) — AGENTS.md·CLAUDE.md는 건드리지 않는다
+    rule = folder / ".agents/rules/discord-bot.md"
+    text = rule.read_text()
+    assert text.startswith("---\ntrigger: always_on\n---\n")
+    assert "<!-- store:discord-bot:start -->" in text and "agy 세션은" in text
+    assert f"{bridge}/scripts/tui-restart.sh .env.g" in text
+    assert not (folder / "AGENTS.md").exists() and not (folder / "CLAUDE.md").exists()
+    assert "g\tagy\t" in run(tmp_path, "list").stdout
+    r = run_linux(tmp_path, "remove", "--name", "g")
+    assert r.returncode == 0, r.stderr
+    assert not rule.exists()          # 프런트매터만 남는 파일은 지운다
+    assert (bridge / ".env.g").exists()   # 토큰 파일 보존
+
+
+def test_linux_codex_add_without_systemd_uses_daemon_sidecar(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    bridge = _fake_bridge(tmp_path)
+    r = run_no_systemd(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+                       "--engine", "codex", "--bridge-dir", str(bridge), "--no-directive-block")
+    assert r.returncode == 0, r.stderr
+    d = tmp_path / ".config/systemd/user"
+    assert not list(d.glob("*.service"))
+    assert "[WARN] systemd 없음" in r.stdout and "b-daemon" in r.stdout
+    daemon_cmd = (d / "b-daemon.tmux-cmd").read_text()
+    assert f"cd {bridge};" in daemon_cmd and "--env-file=.env.b src/index.mjs" in daemon_cmd
+    assert "exec " not in daemon_cmd            # pane 루트 = 셸(관제탑 제약)
+    assert "logs/daemon-b.log" in daemon_cmd
+    assert "new-session -d -s b-daemon" in (d / "b-daemon.up.sh").read_text()
+    assert (d / "b-bot.tmux-cmd").read_text().strip() == f"/bin/bash {bridge}/scripts/tui-up.sh .env.b"
+    assert os.access(d / "b-bot.up.sh", os.X_OK) and os.access(d / "b-daemon.up.sh", os.X_OK)
+    r = run_no_systemd(tmp_path, "doctor", "--name", "b")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "유닛 없음" not in r.stdout and "사이드카 없음" not in r.stdout
+    r = run_no_systemd(tmp_path, "remove", "--name", "b")
+    assert r.returncode == 0, r.stderr
+    assert not list(d.iterdir()), list(d.iterdir())
+
+
+def test_add_injects_permissions_and_remove_recovers(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (folder / ".claude").mkdir()
+    (folder / ".claude/settings.local.json").write_text(
+        '{"permissions": {"allow": ["Bash(git status:*)"]}}')
+    r = run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+            "--no-autostart", "--no-directive-block")
+    assert r.returncode == 0, r.stderr
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert data["permissions"]["allow"] == ["Bash(git status:*)", "Bash(bot-restart:*)", "Bash(bot-thread:*)"]
+    bots = json.loads((tmp_path / ".config/folder-bot/bots.json").read_text())
+    assert bots["b"]["perm_allow"] == ["Bash(bot-restart:*)", "Bash(bot-thread:*)"]
+    # 재실행은 중복 주입 없음, 기록 유지
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--no-autostart", "--no-directive-block")
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert data["permissions"]["allow"].count("Bash(bot-thread:*)") == 1
+    assert json.loads((tmp_path / ".config/folder-bot/bots.json").read_text())["b"]["perm_allow"]
+    r = run(tmp_path, "remove", "--name", "b")
+    assert r.returncode == 0, r.stderr
+    data = json.loads((folder / ".claude/settings.local.json").read_text())
+    assert data["permissions"]["allow"] == ["Bash(git status:*)"]   # 사용자 규칙만 남는다
