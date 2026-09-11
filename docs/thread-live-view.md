@@ -77,12 +77,13 @@
 ## 매트릭스
 | | 맥 | 리눅스(systemd) | 리눅스 컨테이너 | 윈도우(WSL2) |
 |---|---|---|---|---|
-| Claude Code | 같은 코드(bash·curl·tmux·claude) | 같음 | 같음(UDS 폴백 확인) | 같음 |
-| Codex | A 됨(맥 실기 9/11, codex-discord 0.1.19) | 같음 | A 됨(컨테이너 실기 9/11 — `CODEX_TUI_SANDBOX=off` 필요, bwrap 불가) | 같음 |
-| Gemini(agy) | B 됨(맥 실기 9/11) | 같음 | A 됨(컨테이너 실기 9/11) | 같음 |
+| Claude Code | 같은 코드(bash·curl·tmux·claude) | 같음 | 같음(UDS 폴백 확인) | A 됨(WSL2 실기 9/12, folder-bot 0.1.13) |
+| Codex | A 됨(맥 실기 9/11, codex-discord 0.1.19) | 같음 | A 됨(컨테이너 실기 9/11 — `CODEX_TUI_SANDBOX=off` 필요, bwrap 불가) | A 됨(WSL2 실기 9/12 — 번들 bwrap 정상, `CODEX_TUI_SANDBOX` 불필요; 새 폴더 신뢰 프롬프트는 수동 수습) |
+| Gemini(agy) | B 됨(맥 실기 9/11) | 같음 | A 됨(컨테이너 실기 9/11) | A 됨(WSL2 실기 9/12, 붙여넣기 유실 0회) |
 
 A단계 실기 = 메인 "스레드로 해줘" → thread.sh open·안내 / 스레드 대화 → `threads/<id>/log.md` / "세션 마감하고 재시작해" → SESSION.md·rotate → 다음 메시지 `[재정박]`.
 컨테이너 codex는 샌드박스(bwrap)가 네임스페이스를 못 만들어 셸 명령마다 승인 프롬프트가 뜨므로 `.env.<이름>`에 `CODEX_TUI_SANDBOX=off`(codex-discord 0.1.15+)를 둔다 — 지금은 수동, botctl 자동 주입은 후속.
+WSL2 실기(9/12, `RESULT-wsl2-thread-A-20260911.md`) 발견: ① 브리지 엔진 `add`가 `enable --now`라 페어링 전에 데몬·TUI가 뜸(claude 엔진은 enable만) ② codex 미신뢰 새 폴더의 "Do you trust the contents" 프롬프트를 tui-up.sh가 준비로 오판 → 더미 턴이 "No, quit" 선택 ③ `botctl start`가 유닛을 안 거쳐 TUI 유닛 `failed` 잔류 ④ 데몬 재시작 시 rotate 대기(창 없음) 스레드 폐기 → "이어서하자" 무응답 ⑤ 스레드 rotate엔 웹훅이 없는데 지침 문구가 웹훅 안내.
 
 ## 검증 (완료 조건)
 1. 단위: bot-thread `kind` 파싱(가짜 curl), 맵 증분, Stop 훅 추출(픽스처 transcript: 도구 호출·중간 텍스트 섞인 턴에서 마지막 턴 텍스트만) — 기존 36 + 신규 통과.
