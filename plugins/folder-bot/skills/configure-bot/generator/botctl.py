@@ -385,6 +385,28 @@ def write_codex_env(bot: dict) -> list[str]:
     return [f"브리지 인스턴스 생성: {p} (토큰·채널은 pair에서)"]
 
 
+def ensure_codex_trust(folder: str) -> list[str]:
+    """작업 폴더를 codex 신뢰 목록(~/.codex/config.toml)에 선등록 — 멱등, 섹션은 파일 끝에 추가.
+    미신뢰 새 폴더면 TUI 첫 화면이 "Do you trust the contents of this directory?"라 무인 기동이 멈춘다
+    (WSL2 실기 2026-09-12: tui-up.sh가 이 화면을 준비로 오판 → 더미 턴이 "No, quit" 선택). codex-discord install.sh와 동형."""
+    cfg = Path.home() / ".codex" / "config.toml"
+    key = f'[projects."{folder}"]'
+    section = f'{key}\ntrust_level = "trusted"\n'
+    if cfg.exists():
+        text = cfg.read_text()
+        if key in text:
+            return []
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n" + section if text else section
+    else:
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        text = section
+    cfg.write_text(text)
+    cfg.chmod(0o600)
+    return [f"codex 신뢰 등록: {folder} (~/.codex/config.toml)"]
+
+
 def codex_labels(bot: dict) -> tuple[str, str]:
     return f"com.codex-discord.{bot['name']}", f"com.codex-discord.{bot['name']}-tui"
 
@@ -710,6 +732,8 @@ def cmd_add(a) -> None:
     save_bots(bots)
     bot = resolve_bot(a.name)
     lines = install_all(bot, allow_mcp=a.allow_project_mcp)
+    if bot["engine"] == "codex":
+        lines += ensure_codex_trust(bot["folder"])
     if bot["engine"] == "claude":
         sl_lines, injected = write_statusline(bot)
         lines += sl_lines

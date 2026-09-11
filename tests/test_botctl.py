@@ -202,6 +202,37 @@ def test_codex_add_creates_env_and_plists(tmp_path):
     assert f"{bridge}/scripts/tui-restart.sh .env.b" in agents
     assert f"{bridge}/scripts/thread.sh .env.b open" in agents and "DISCORD_THREAD_ID" in agents   # 스레드(0.1.12)
     assert not (folder / "CLAUDE.md").exists()
+    # 0.1.14: codex 신뢰 선등록 — 미신뢰 새 폴더의 "Do you trust" 프롬프트가 무인 기동을 막는다(WSL2 실기 9/12)
+    cfg = tmp_path / ".codex/config.toml"
+    assert cfg.read_text() == f'[projects."{folder}"]\ntrust_level = "trusted"\n'
+    assert oct(cfg.stat().st_mode & 0o777) == "0o600"
+    assert f"codex 신뢰 등록: {folder}" in r.stdout
+
+
+def test_codex_add_trust_is_idempotent_and_preserves_existing_config(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    bridge = _fake_bridge(tmp_path)
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    cfg = tmp_path / ".codex/config.toml"; cfg.parent.mkdir()
+    cfg.write_text('model = "gpt-5"\n[projects."/other"]\ntrust_level = "trusted"')   # 개행 없이 끝남
+    args = ["add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+            "--engine", "codex", "--bridge-dir", str(bridge)]
+    assert run(tmp_path, *args).returncode == 0
+    assert run(tmp_path, *args).returncode == 0
+    text = cfg.read_text()
+    assert text.startswith('model = "gpt-5"\n[projects."/other"]\ntrust_level = "trusted"\n')
+    assert text.count(f'[projects."{folder}"]') == 1
+    assert text.endswith(f'\n[projects."{folder}"]\ntrust_level = "trusted"\n')
+
+
+def test_agy_add_does_not_touch_codex_config(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    bridge = _fake_bridge(tmp_path)
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    r = run(tmp_path, "add", "--name", "g", "--folder", str(folder), "--session", "g-bot",
+            "--engine", "agy", "--bridge-dir", str(bridge))
+    assert r.returncode == 0, r.stderr
+    assert not (tmp_path / ".codex").exists()
 
 
 def test_codex_pair_fills_env_lines(tmp_path):
