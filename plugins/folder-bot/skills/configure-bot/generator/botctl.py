@@ -211,7 +211,7 @@ def write_tmux_unit(label: str, session: str, description: str, cmd: str, extra_
     body = (f"# {description}\n[Unit]\nDescription={label} (tmux 세션 {session})\n"
             "After=network-online.target\n\n"
             "[Service]\nType=oneshot\nRemainAfterExit=yes\nKillMode=process\n"
-            f"ExecStart=/bin/bash {up}\nExecStop={tmux} kill-session -t {session}\n{extra_unit}\n"
+            f"ExecStart=/bin/bash {up}\nExecStop=-{tmux} kill-session -t {session}\n{extra_unit}\n"
             "[Install]\nWantedBy=default.target\n")
     changed = not (unit.exists() and unit.read_text() == body)
     unit.write_text(body)
@@ -458,18 +458,20 @@ def write_codex_units(bot: dict) -> list[str]:
     if not has_systemd():
         return write_codex_sidecars(bot, node, path_env)
     out = []
+    eng = bot["engine"]   # 0.1.18: Description을 엔진명으로(agy 유닛이 "codex"로 보이던 문제)
     daemon_body = (f"# folder-bot codex daemon: name={bot['name']} folder={bot['folder']}\n"
-                   f"[Unit]\nDescription={daemon_l} (Discord ↔ codex 브리지)\nAfter=network-online.target\n\n"
+                   f"[Unit]\nDescription={daemon_l} (Discord ↔ {eng} 브리지)\nAfter=network-online.target\n\n"
                    f"[Service]\nType=simple\nWorkingDirectory={bd}\nEnvironment=\"PATH={path_env}\"\n"
                    f"ExecStart={node} --env-file=.env.{bot['name']} src/index.mjs\nRestart=always\nRestartSec=15\n"
                    f"StandardOutput=append:{bd}/logs/daemon-{bot['name']}.log\n"
                    f"StandardError=append:{bd}/logs/daemon-{bot['name']}.log\n\n"
                    "[Install]\nWantedBy=default.target\n")
     tui_body = (f"# folder-bot codex tui: name={bot['name']} session={bot['session']} folder={bot['folder']}\n"
-                f"[Unit]\nDescription={tui_l} (codex TUI tmux 세션 {bot['session']})\nAfter=network-online.target\n\n"
+                f"[Unit]\nDescription={tui_l} ({eng} TUI tmux 세션 {bot['session']})\nAfter=network-online.target\n\n"
                 f"[Service]\nType=oneshot\nRemainAfterExit=yes\nKillMode=process\nWorkingDirectory={bd}\n"
                 f"Environment=\"PATH={path_env}\"\nExecStart=/bin/bash {bd}/scripts/tui-up.sh .env.{bot['name']}\n"
-                f"ExecStop={find_tmux()} kill-session -t {bot['session']}\n"
+                f"ExecStop=-{find_tmux()} kill-session -t {bot['session']}\n"   # `-`: 세션이 이미 없어도 exit 1을 실패로 안 남김(WSL2 실측 9/12)
+
                 f"StandardOutput=append:{bd}/logs/tui-up-{bot['name']}.log\n"
                 f"StandardError=append:{bd}/logs/tui-up-{bot['name']}.log\n\n"
                 "[Install]\nWantedBy=default.target\n")

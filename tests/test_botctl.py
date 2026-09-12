@@ -409,7 +409,7 @@ def test_linux_add_writes_unit_and_sidecars(tmp_path):
     assert "# folder-bot: name=b session=b-bot folder=" + str(folder) in text
     assert "Type=oneshot" in text and "RemainAfterExit=yes" in text and "KillMode=process" in text
     assert f"ExecStart=/bin/bash {d}/b-bot.up.sh" in text
-    assert "kill-session -t b-bot" in text and "WantedBy=default.target" in text
+    assert "ExecStop=-" in text and "kill-session -t b-bot" in text and "WantedBy=default.target" in text
     cmd = (d / "b-bot.tmux-cmd").read_text()
     assert cmd.startswith("/bin/bash -lc '") and f"cd {folder}" in cmd
     assert "DISCORD_STATE_DIR=" in cmd and "/.local/bin/bot-up -n b-bot --remote-control b-bot" in cmd
@@ -520,6 +520,7 @@ def test_linux_codex_add_writes_units(tmp_path):
     tui = (d / "com.codex-discord.b-tui.service").read_text()
     assert "Type=oneshot" in tui and "KillMode=process" in tui
     assert f"ExecStart=/bin/bash {bridge}/scripts/tui-up.sh .env.b" in tui
+    assert "ExecStop=-" in tui and "(codex TUI tmux 세션 b-bot)" in tui and "(Discord ↔ codex 브리지)" in daemon
     assert not (tmp_path / "Library/LaunchAgents").exists()
     r = run_linux(tmp_path, "remove", "--name", "b")
     assert r.returncode == 0, r.stderr
@@ -885,6 +886,7 @@ def test_agy_add_writes_env_and_rules_file(tmp_path):
     assert "TUI_PANE=g-bot:0.0" in env and (bridge / "data-g").is_dir()
     d = tmp_path / ".config/systemd/user"
     assert (d / "com.codex-discord.g.service").exists() and (d / "com.codex-discord.g-tui.service").exists()
+    assert "(agy TUI tmux 세션 g-bot)" in (d / "com.codex-discord.g-tui.service").read_text()   # 0.1.18: 엔진명 Description
     # 지침은 agy 규칙 파일(.agents/rules, always_on) — AGENTS.md·CLAUDE.md는 건드리지 않는다
     rule = folder / ".agents/rules/discord-bot.md"
     text = rule.read_text()
