@@ -69,6 +69,10 @@ add에 `--allow-project-mcp`를 붙인다(`.claude/settings.local.json`에
 
 ### 4. 디스코드 포탈 수동 단계 (순서대로 안내, 사용자가 끝냈다고 할 때까지 대기)
 
+**자동 경로**: 설치기 플러그인(harness-installer)의 `discord-bot-setup` 스킬(chrome-devtools MCP로
+포탈·디스코드 웹 조작)이 있고 브라우저 제어가 되면 아래 1·3·4·5·6번을 그 스킬이 대신한다(모드 B).
+토큰(2번)은 어느 경로든 사람이 한다. MCP 등록은 사용자 몫이며 안 돼 있으면 아래 수동 절차가 정본이다.
+
 1. https://discord.com/developers/applications → **New Application** → 이름 입력
 2. **Bot** 탭 → **Reset Token** → 토큰 복사(한 번만 보임).
    **복사한 토큰은 채팅에 붙여넣지 않게 안내한다** — 대상 폴더에 파일로 저장하게 한다:
@@ -77,7 +81,9 @@ add에 `--allow-project-mcp`를 붙인다(`.claude/settings.local.json`에
    `wl-paste` / VPS(ssh) `cat > .bot-token` 뒤 붙여넣고 Enter·Ctrl-D — 이어서 `chmod 600 .bot-token`.
 3. 같은 화면 Privileged Gateway Intents에서 **MESSAGE CONTENT INTENT** 켜기 → Save
 4. **OAuth2 → URL Generator**: scope `bot` 체크, Bot Permissions에서
-   View Channels / Send Messages / Read Message History / Embed Links / Attach Files 체크
+   View Channels / Send Messages / Read Message History / Create Public Threads /
+   Send Messages in Threads / Embed Links / Attach Files / Add Reactions 8개 체크
+   (URL의 `permissions=309237763136` — 스레드 라이브 뷰·`bot-thread open`·플러그인 `react`에 필요)
    → 생성된 URL을 브라우저로 열어 서버에 초대
 5. 디스코드 서버에 전용 텍스트 채널 생성(예: #협업)
 6. 디스코드 설정 → 고급 → 개발자 모드 켠 뒤: 채널 우클릭 → **채널 ID 복사**,
