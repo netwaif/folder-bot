@@ -1,4 +1,5 @@
-import json, os, shutil, subprocess, sys
+import json, os, shutil, subprocess, sys, time
+import pytest
 from pathlib import Path
 
 BOTCTL = Path(__file__).parent.parent / "plugins/folder-bot/skills/configure-bot/generator/botctl.py"
@@ -948,3 +949,57 @@ def test_add_injects_permissions_and_remove_recovers(tmp_path):
     assert r.returncode == 0, r.stderr
     data = json.loads((folder / ".claude/settings.local.json").read_text())
     assert data["permissions"]["allow"] == ["Bash(git status:*)"]   # 사용자 규칙만 남는다
+
+
+# ---- 스레드 창 pane 고정 전달 (2026-09-13 실측: 창을 분할하면 창 타깃 붙여넣기가 활성 pane으로 가서
+#      Discord 메시지·첨부가 스레드 세션에 도착하지 않았다) — 실제 tmux 서버(-L 소켓)로 재현한다.
+def _tmux_shim(tmp_path, sock):
+    shim = tmp_path / "shim"; shim.mkdir(exist_ok=True)
+    t = shim / "tmux"
+    t.write_text(f'#!/bin/bash\nexec tmux -L {sock} "$@"\n'); t.chmod(0o755)
+    return t
+
+
+def _deliver_with_split(tmp_path, map_entry):
+    folder = tmp_path / "w"; folder.mkdir()
+    st = _thread_env(tmp_path, folder)
+    sock = f"bt{os.getpid()}"
+    tmux = _tmux_shim(tmp_path, sock)
+    out0 = tmp_path / "p0.txt"; out1 = tmp_path / "p1.txt"
+    def T(*a):
+        return subprocess.run([str(tmux), *a], capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        T("new-session", "-d", "-s", "b-bot", "-n", "main", "sleep 300")
+        pane0 = T("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "b-bot", "-n", "t000999", f"cat > '{out0}'")
+        entry = dict(map_entry); entry.setdefault("window", "t000999")
+        if entry.pop("_use_pane", False):
+            entry["pane"] = pane0
+        (st / "threads.json").write_text(json.dumps({"999": entry}))
+        T("split-window", "-t", "b-bot:t000999", f"cat > '{out1}'")   # 분할 → 새 pane이 활성
+        env = dict(os.environ, HOME=str(tmp_path), BOT_THREAD_TMUX=str(tmux))
+        r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "deliver", "b", "999", "hello-thread"],
+                           capture_output=True, text=True, env=env, timeout=60)
+        assert r.returncode == 0, r.stderr
+        time.sleep(1)
+        got0 = out0.read_text() if out0.exists() else ""
+        got1 = out1.read_text() if out1.exists() else ""
+        stored = json.loads((st / "threads.json").read_text())["999"]
+        return got0, got1, stored, pane0
+    finally:
+        subprocess.run([str(tmux), "kill-server"], capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux 필요")
+def test_bot_thread_deliver_uses_stored_pane_not_active(tmp_path):
+    got0, got1, stored, pane0 = _deliver_with_split(tmp_path, {"session_id": "s1", "_use_pane": True})
+    assert "hello-thread" in got0, "저장된 pane(원래 claude pane)에 들어가야 한다"
+    assert "hello-thread" not in got1, "분할로 생긴 활성 pane에 들어가면 안 된다"
+    assert stored["pane"] == pane0
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux 필요")
+def test_bot_thread_deliver_legacy_entry_falls_back_to_first_pane(tmp_path):
+    # 0.1.19 이전 맵(pane 없음): 활성 pane이 아니라 창의 첫 pane(원래 세션)으로 가고 pane을 기록한다
+    got0, got1, stored, pane0 = _deliver_with_split(tmp_path, {"session_id": "s1"})
+    assert "hello-thread" in got0 and "hello-thread" not in got1
+    assert stored.get("pane") == pane0

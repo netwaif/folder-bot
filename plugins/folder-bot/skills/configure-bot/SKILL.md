@@ -158,6 +158,7 @@ python3 "<이 스킬 폴더>/generator/botctl.py" start --name <이름>
   스레드 세션이 `threads/<스레드ID>/SESSION.md`를 갱신하고 `bot-thread rotate`로 새 세션에 넘긴다(다음 메시지에 `[재정박]`
   접두로 그 파일을 먼저 읽음). compact가 돌면 PreCompact 훅이 스레드에 알린다. 메인 세션은 스레드 내용을 모르므로
   스레드 관련 질문엔 `threads/*/log.md`(자동 한 줄 요약)·SESSION.md·`fetch_messages`로 찾아 답한다.
+- 스레드 창을 분할해 써도 된다(0.1.20): 전달 대상은 창이 아니라 세션 pane ID(`threads.json`의 `pane`)라 활성 pane이 바뀌어도 메시지·첨부가 스레드 세션으로 간다.
 - 설계·검증 기록: `docs/thread-live-view.md`. codex·agy 엔진의 스레드 라이브도 A단계 동작(맥·컨테이너·WSL2 실기 9/11~12).
 - add는 폴더 `.claude/settings.local.json`의 `permissions.allow`에 `Bash(bot-restart:*)`·`Bash(bot-thread:*)`를
   주입한다(auto 권한 분류기가 지침의 재시작·스레드 명령을 막은 실측, 2026-09-11 컨테이너). remove가 그 규칙만 회수.

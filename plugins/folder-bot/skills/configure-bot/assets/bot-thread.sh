@@ -111,6 +111,26 @@ sys.exit(0 if any(pid in ids and is_claude(args) for pid, _, args in rows) else 
 }
 transcript_of() { find "$PROJECTS" -maxdepth 2 -name "$1.jsonl" 2>/dev/null | head -1; }
 
+# 스레드 창의 "세션 pane"을 정한다 — 창 타깃(<세션>:t<short>)은 tmux가 활성 pane으로 해석하므로
+# 사용자가 창을 분할하면 붙여넣기가 새 pane으로 간다(2026-09-13 실측: 첨부·메시지가 스레드 세션에 미도착).
+# 규칙: 맵의 pane(%N, 불변)이 그 창에 살아 있으면 그것 → 없으면 창 안에서 claude가 도는 pane →
+# 그것도 없으면 첫 pane(pane_index 최소). 찾은 값은 맵에 기록해 다음부터 고정.
+thread_pane() {  # thread_pane <thread_id> → pane_id 출력(없으면 빈 문자열, rc 1)
+  local tid="$1" win="t$(short_of "$1")" want="$SESSION:t$(short_of "$1")"
+  local pane; pane=$(map_get "$tid" pane)
+  if [[ -n "$pane" ]]; then
+    local at; at=$("$TMUX_BIN" display-message -p -t "$pane" '#{session_name}:#{window_name}' 2>/dev/null || true)
+    [[ "$at" == "$want" ]] && { echo "$pane"; return 0; }
+  fi
+  local first="" id pid
+  while read -r id pid; do
+    [[ -n "$first" ]] || first="$id"
+    if pane_has_claude "$pid"; then map_set "$tid" "pane=$id"; echo "$id"; return 0; fi
+  done < <("$TMUX_BIN" list-panes -t "$want" -F '#{pane_id} #{pane_pid}' 2>/dev/null | sort -k1.2n)
+  [[ -n "$first" ]] || return 1
+  map_set "$tid" "pane=$first"; echo "$first"
+}
+
 cmd_kind() {
   local cid="$1"
   local cached; cached=$(map_get "$cid" kind)
@@ -145,7 +165,8 @@ cmd_ensure() {
   # 창이 살아 있고 claude가 돌고 있으면 그대로. pane_current_command는 믿지 않는다 —
   # 컨테이너의 claude는 셸 래퍼라 sh로 보인다(2026-09-11 실측: 살아 있는 스레드 세션을 매 메시지마다
   # 죽이고 재생성함). pane PID의 자손 트리에서 claude를 찾는다(codex-discord treeHasEngine과 같은 규약).
-  local ppid; ppid=$("$TMUX_BIN" list-panes -t "$SESSION:$win" -F '#{pane_pid}' 2>/dev/null | head -1 || true)
+  local pane ppid=""; pane=$(thread_pane "$tid" 2>/dev/null || true)
+  [[ -n "$pane" ]] && ppid=$("$TMUX_BIN" display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)
   if [[ -n "$ppid" ]]; then
     if pane_has_claude "$ppid"; then
       map_set "$tid" "window=$win"; echo "$agent"; cmd_gc --quiet; return 0
@@ -162,16 +183,18 @@ cmd_ensure() {
   local settings="$STATE/thread-settings.json"
   printf '%s\n' '{"enabledPlugins":{"discord@claude-plugins-official":false}}' > "$settings"
   local inner="cd '$FOLDER'; export DISCORD_THREAD_ID='$tid' DISCORD_BOT_NAME='$BOT'; exec $CLAUDE_BIN -n '$agent' --permission-mode auto --settings '$settings' $resume_flag"
-  "$TMUX_BIN" new-window -d -t "$SESSION" -n "$win" -c "$FOLDER" "bash -lc \"$inner\"" || { echo "오류: 창 생성 실패" >&2; return 1; }
-  log "창 생성: $SESSION:$win ($resume_flag)"
+  local new_pane
+  new_pane=$("$TMUX_BIN" new-window -d -P -F '#{pane_id}' -t "$SESSION" -n "$win" -c "$FOLDER" "bash -lc \"$inner\"") || { echo "오류: 창 생성 실패" >&2; return 1; }
+  map_set "$tid" "pane=$new_pane"
+  log "창 생성: $SESSION:$win $new_pane ($resume_flag)"
   # 준비 대기: 입력 프롬프트(❯)가 뜰 때까지
   local t="${BOT_THREAD_READY_TIMEOUT:-60}" i=0
   while (( i < t )); do
     sleep 1; i=$((i+1))
-    if "$TMUX_BIN" capture-pane -p -t "$SESSION:$win" 2>/dev/null | grep -q '❯'; then
+    if "$TMUX_BIN" capture-pane -p -t "$new_pane" 2>/dev/null | grep -q '❯'; then
       map_set "$tid" "window=$win"; echo "$agent"; cmd_gc --quiet; return 0
     fi
-    "$TMUX_BIN" list-panes -t "$SESSION:$win" >/dev/null 2>&1 || { echo "오류: 스레드 세션이 바로 종료됨 — 창 $win 로그 확인" >&2; return 1; }
+    "$TMUX_BIN" list-panes -t "$new_pane" >/dev/null 2>&1 || { echo "오류: 스레드 세션이 바로 종료됨 — 창 $win 로그 확인" >&2; return 1; }
   done
   echo "오류: ${t}초 내 스레드 세션 미준비: $SESSION:$win" >&2; return 1
 }
@@ -223,8 +246,8 @@ cmd_deliver() {
   local tid="$1" text="${2:-}"
   [[ "$text" == "-" || -z "$text" ]] && text=$(cat)
   [[ -n "$TMUX_BIN" ]] || { echo "오류: tmux 없음" >&2; return 1; }
-  local win="t$(short_of "$tid")" target="$SESSION:t$(short_of "$tid")"
-  "$TMUX_BIN" list-panes -t "$target" >/dev/null 2>&1 || { echo "오류: 스레드 창 없음: $target (ensure 먼저)" >&2; return 1; }
+  local win="t$(short_of "$tid")" target
+  target=$(thread_pane "$tid") || { echo "오류: 스레드 창 없음: $SESSION:$win (ensure 먼저)" >&2; return 1; }
   local clean; clean=$(printf '%s' "$text" | LC_ALL=C tr -d '\000-\010\013-\037\177')
   local buf="bot-thread-$$-$RANDOM"
   "$TMUX_BIN" set-buffer -b "$buf" -- "$clean" || return 1
