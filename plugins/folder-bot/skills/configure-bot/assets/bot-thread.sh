@@ -255,11 +255,15 @@ cmd_deliver() {
   local n=${#clean}; local ms=$(( 300 + (n / 50 > 800 ? 800 : n / 50) ))
   python3 -c "import time; time.sleep($ms/1000)"
   "$TMUX_BIN" send-keys -t "$target" Enter
-  # 제출 확인: 입력줄에 본문 첫 줄이 남아 있으면 Enter 재전송(최대 3회)
-  local first; first=$(printf '%s' "$clean" | head -1 | cut -c1-40)
+  # 제출 확인: 입력줄(❯)에 내용이 남아 있으면 미제출 → Enter 재전송(최대 3회).
+  # 여러 줄 붙여넣기는 "[Pasted text #N +K lines]"로 접혀 본문 첫 줄이 안 보이므로,
+  # 첫 줄 매칭이 아니라 "입력줄이 비었는가"로 판정한다(접힌 paste도 미제출로 잡힌다).
+  local line rest
   for _ in 1 2 3; do
     sleep 1
-    if "$TMUX_BIN" capture-pane -p -t "$target" | grep -E '^❯ ' | tail -1 | grep -qF -- "$first"; then
+    line=$("$TMUX_BIN" capture-pane -p -t "$target" | grep -E '^❯ ' | tail -1)
+    rest=$(printf '%s' "${line#❯ }" | tr -d '[:space:]')
+    if [[ -n "$rest" ]]; then
       "$TMUX_BIN" send-keys -t "$target" Enter
     else
       break
@@ -276,9 +280,10 @@ cmd_fetch_attachments() {
   python3 - "$body" "$dir" <<'EOF2' | while IFS=$'\t' read -r url name; do
 import json, sys, re
 d = json.loads(sys.argv[1])
-for a in d.get("attachments", []):
+# 인덱스 접두로 동명 첨부(디스코드는 스크린샷을 모두 image.png로 준다)가 서로 덮어쓰지 않게 한다.
+for i, a in enumerate(d.get("attachments", [])):
     name = re.sub(r"[^\w.\-가-힣]", "_", a.get("filename") or a.get("id"))
-    print(a["url"] + "\t" + name)
+    print(a["url"] + "\t" + str(i) + "-" + name)
 EOF2
     "$CURL" -sSL -o "$dir/$name" "$url" && echo "$dir/$name"
   done

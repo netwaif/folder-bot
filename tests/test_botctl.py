@@ -1003,3 +1003,88 @@ def test_bot_thread_deliver_legacy_entry_falls_back_to_first_pane(tmp_path):
     got0, got1, stored, pane0 = _deliver_with_split(tmp_path, {"session_id": "s1"})
     assert "hello-thread" in got0 and "hello-thread" not in got1
     assert stored.get("pane") == pane0
+
+
+# ── 버그 1: collapsed paste에서 제출 확인 오판 ────────────────────────────────
+# 여러 줄 본문은 claude 입력창에서 "[Pasted text #N +K lines]"로 접힌다. Enter가
+# 흡수돼 미제출로 남아도, 첫 줄(<channel …>)이 화면에 안 보여 재전송 안전망이 안 돈다.
+def _fake_tmux_for_submit(tmp_path, pane, want, cap_file, enter_log):
+    """capture-pane 내용을 cap_file로 주입하고 send-keys Enter 횟수를 enter_log에 센다."""
+    shim = tmp_path / "shim"; shim.mkdir(exist_ok=True)
+    t = shim / "tmux"
+    t.write_text(f'''#!/bin/bash
+case "$1" in
+  has-session) exit 0 ;;
+  display-message) echo "{want}" ;;               # thread_pane: 캐시 pane이 want에 있다고 확인
+  list-panes) echo "{pane} 1" ;;
+  set-buffer|paste-buffer) exit 0 ;;
+  capture-pane) cat "{cap_file}" ;;
+  send-keys)
+    for a in "$@"; do [ "$a" = "Enter" ] && echo E >> "{enter_log}"; done ;;
+esac
+exit 0
+''')
+    t.chmod(0o755)
+    return t
+
+
+def _run_deliver_submit(tmp_path, cap_content):
+    folder = tmp_path / "w"; folder.mkdir()
+    st = _thread_env(tmp_path, folder)
+    tid = "999999000999"; short = tid[-6:]; pane = "%1"; want = f"b-bot:t{short}"
+    (st / "threads.json").write_text(json.dumps({tid: {"pane": pane, "window": f"t{short}"}}))
+    cap_file = tmp_path / "cap.txt"; cap_file.write_text(cap_content)
+    enter_log = tmp_path / "enter.log"; enter_log.write_text("")
+    tmux = _fake_tmux_for_submit(tmp_path, pane, want, cap_file, enter_log)
+    body = '<channel source="plugin:discord:discord">\n찾았어. 이거지?\n</channel>\n첨부:'
+    env = dict(os.environ, HOME=str(tmp_path), BOT_THREAD_TMUX=str(tmux))
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "deliver", "b", tid, body],
+                       capture_output=True, text=True, env=env, timeout=30)
+    assert r.returncode == 0, r.stderr
+    return enter_log.read_text().count("E")
+
+
+def test_deliver_resends_enter_when_paste_stays_collapsed(tmp_path):
+    # 입력창에 collapsed paste가 계속 남아 있으면(미제출) 초기 1회 + 재전송 3회 = 4회
+    n = _run_deliver_submit(tmp_path, "❯ [Pasted text #1 +3 lines]\n")
+    assert n >= 2, f"미제출 상태인데 재전송이 안 됨(Enter {n}회) — 안전망 무력화"
+
+
+def test_deliver_stops_when_input_clears(tmp_path):
+    # 입력창이 비면(제출 완료) 초기 1회만, 불필요한 재전송 없음
+    n = _run_deliver_submit(tmp_path, "❯ \n")
+    assert n == 1, f"제출됐는데 Enter가 {n}회 — 과잉 전송"
+
+
+# ── 버그 2: 한 메시지의 동명 첨부가 서로 덮어씀 ──────────────────────────────
+def _fake_curl_fetch(tmp_path, meta_json):
+    """api GET엔 메타 JSON을, -o 다운로드엔 파일 생성을 하는 curl 대체."""
+    shim = tmp_path / "shim"; shim.mkdir(exist_ok=True)
+    c = shim / "curl"
+    c.write_text(f'''#!/bin/bash
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+if [ -n "$out" ]; then printf 'DL' > "$out"; exit 0; fi
+cat <<'RESP'
+{meta_json}
+RESP
+''')
+    c.chmod(0o755)
+    return c
+
+
+def test_fetch_attachments_keeps_both_same_name(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    st = _thread_env(tmp_path, folder)
+    meta = '{"attachments":[{"id":"a1","filename":"image.png","url":"http://x/1"},{"id":"a2","filename":"image.png","url":"http://x/2"}]}'
+    curl = _fake_curl_fetch(tmp_path, meta)
+    env = dict(os.environ, HOME=str(tmp_path), BOT_THREAD_CURL=str(curl), BOT_THREAD_TMUX="/bin/false")
+    r = subprocess.run(["bash", str(ASSETS / "bot-thread.sh"), "fetch-attachments", "b", "999", "555"],
+                       capture_output=True, text=True, env=env, timeout=30)
+    assert r.returncode == 0, r.stderr
+    paths = [p for p in r.stdout.splitlines() if p.strip()]
+    assert len(paths) == 2, f"두 경로가 출력돼야 함: {paths}"
+    assert len(set(paths)) == 2, f"동명이라 같은 경로로 덮어씀: {paths}"
+    inbox = st / "inbox/555"
+    files = sorted(f.name for f in inbox.iterdir())
+    assert len(files) == 2, f"두 파일이 남아야 함(덮어쓰기 금지): {files}"
