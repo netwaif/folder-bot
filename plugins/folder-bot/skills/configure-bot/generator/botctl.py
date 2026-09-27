@@ -134,6 +134,7 @@ def resolve_bot(name: str) -> dict:
     b.setdefault("state_dir", str(Path(b["folder"]) / ".discord-state"))
     b.setdefault("autostart", True)
     b.setdefault("directive_block", True)
+    b.setdefault("dev_channels", [])
     if b["engine"] in BRIDGE_ENGINES:
         b.setdefault("bridge_dir",
                      load_config().get("codex_bridge_dir", "~/codex-discord"))
@@ -175,8 +176,12 @@ def build_cmd(bot: dict) -> str:
     flags = ""
     if bot["remote_control"]:
         flags = f" -n {bot['session']} --remote-control {bot['remote_control']}"
+    dev = ""
+    if bot.get("dev_channels"):
+        # research preview 채널(예: agentlayer channel serve). 기동마다 확인창이 뜨며 bot-up.sh가 Enter로 넘긴다.
+        dev = " --dangerously-load-development-channels " + " ".join(bot["dev_channels"])
     parts.append(f"exec {home()}/.local/bin/bot-up{flags}"
-                 " --channels plugin:discord@claude-plugins-official")
+                 " --channels plugin:discord@claude-plugins-official" + dev)
     shell = "/bin/bash" if host_os() == "linux" else "/bin/zsh"   # 리눅스는 zsh가 없을 수 있다
     return shell + " -lc '" + "; ".join(parts) + "'"
 
@@ -739,6 +744,12 @@ def cmd_add(a) -> None:
         entry["directive_block"] = False
     if a.no_autostart:
         entry["autostart"] = False
+    if a.no_dev_channels:
+        entry.pop("dev_channels", None)
+    elif a.dev_channel:
+        entry["dev_channels"] = list(dict.fromkeys(a.dev_channel))
+    elif prior.get("dev_channels"):
+        entry["dev_channels"] = prior["dev_channels"]  # 플래그 없이 재등록해도 유지
     bots[a.name] = entry
     save_bots(bots)
     bot = resolve_bot(a.name)
@@ -1029,6 +1040,11 @@ def cmd_doctor(a) -> None:
             if not trusted:
                 rep("WARN", "워크스페이스 미신뢰 — 봇 세션이 승인 다이얼로그에 막힐 수 있음"
                             " (해당 폴더에서 claude를 한 번 열어 신뢰를 수락할 것)")
+            if b.get("dev_channels"):
+                want = "--dangerously-load-development-channels " + " ".join(b["dev_channels"])
+                p = plist_path(b)
+                if p.exists() and want not in p.read_text():
+                    rep("WARN", f"개발 채널 플래그가 기동 정의에 없음({want}) — botctl add 재실행")
             env = Path(b["state_dir"]) / ".env"
             if not env.exists():
                 rep("WARN", f"페어링 안 됨(.env 없음): {env}")
@@ -1090,6 +1106,9 @@ def main() -> None:
     ap.add_argument("--no-remote-control", action="store_true")
     ap.add_argument("--no-directive-block", action="store_true")
     ap.add_argument("--no-autostart", action="store_true")
+    ap.add_argument("--dev-channel", action="append", default=[],
+                    help="개발 채널(예: server:agentlayer) — 기동 인자 --dangerously-load-development-channels에 추가, 반복 가능")
+    ap.add_argument("--no-dev-channels", action="store_true", help="등록된 개발 채널 제거")
     ap.add_argument("--allow-project-mcp", action="store_true")
     ap.set_defaults(fn=cmd_add)
 

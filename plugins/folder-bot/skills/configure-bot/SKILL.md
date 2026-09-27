@@ -53,7 +53,7 @@ python3 "<이 스킬 폴더>/generator/botctl.py" add --name <이름> --folder <
 
 (리모트 컨트롤 끄면 `--no-remote-control`, 자동 기동 원치 않으면 `--no-autostart`,
 지침 블록이 이미 자체 규칙으로 있는 폴더 — 예: 멀티 에이전트 하네스의 오케스트레이터 — 는
-`--no-directive-block`.) 출력을 그대로 보여준다.
+`--no-directive-block`. 개발 채널(agentlayer channel 등)을 쓰는 봇은 `--dev-channel server:agentlayer`(반복 가능, 제거는 `--no-dev-channels`).) 출력을 그대로 보여준다.
 
 usage-coach(대시보드)가 설치돼 있으면 add가 봇 폴더 `.claude/settings.local.json`에
 statusLine을 자동 주입한다(대시보드 클로드 카드의 데이터원 — 미주입 시 카드가 영구 공백,

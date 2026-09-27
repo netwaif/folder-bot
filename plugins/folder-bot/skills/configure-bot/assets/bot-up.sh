@@ -112,5 +112,28 @@ json.dump(d, open(p, "w"))
 PYEOF
 fi
 
+# --- 개발 채널 확인창 자동 통과 (agentlayer channel serve 등 server: 채널은 research preview라 기동마다 확인창이 뜬다) ---
+# 확인창("WARNING: Loading development channels" / "I am using this for local development")은 매번 같은 고정 화면이므로
+# Enter 한 번을 부팅 절차로 보낸다 — 메시지 주입이 아니다. 로그는 pane이 아니라 파일로(감시자는 fd를 분리한다).
+if [[ " $* " == *" --dangerously-load-development-channels "* && -n "${TMUX_PANE:-}" ]]; then
+  TMUX_BIN="${TMUX_BIN:-$(command -v tmux || true)}"
+  [[ -z "$TMUX_BIN" && -x /opt/homebrew/bin/tmux ]] && TMUX_BIN=/opt/homebrew/bin/tmux
+  DEV_LOG="${BOT_UP_LOG:-$HOME/.claude/logs/bot-up.log}"; mkdir -p "$(dirname "$DEV_LOG")"
+  if [[ -n "$TMUX_BIN" ]]; then
+    (
+      poll="${DEV_CHANNEL_POLL:-3}"; deadline=$((SECONDS + ${DEV_CHANNEL_TIMEOUT:-60}))
+      while (( SECONDS < deadline )); do
+        sleep "$poll"
+        if "$TMUX_BIN" capture-pane -p -t "$TMUX_PANE" 2>/dev/null | grep -q 'WARNING: Loading development channels'; then
+          "$TMUX_BIN" send-keys -t "$TMUX_PANE" Enter
+          echo "[bot-up $(date '+%F %T')] dev-channel: 확인창 통과 (pane $TMUX_PANE)" >> "$DEV_LOG"
+          exit 0
+        fi
+      done
+      echo "[bot-up $(date '+%F %T')] dev-channel: 확인창 미출현(${DEV_CHANNEL_TIMEOUT:-60}s) — 플래그·UI 변경 여부 확인" >> "$DEV_LOG"
+    ) >/dev/null 2>&1 &
+  fi
+fi
+
 log "claude 기동: $CLAUDE_BIN $*"
 exec "$CLAUDE_BIN" "$@"

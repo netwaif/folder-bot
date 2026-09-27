@@ -1088,3 +1088,28 @@ def test_fetch_attachments_keeps_both_same_name(tmp_path):
     inbox = st / "inbox/555"
     files = sorted(f.name for f in inbox.iterdir())
     assert len(files) == 2, f"두 파일이 남아야 함(덮어쓰기 금지): {files}"
+
+
+def test_dev_channel_flag_in_plist_and_roundtrip(tmp_path):
+    folder = tmp_path / "company"; folder.mkdir()
+    r = run(tmp_path, "add", "--name", "company", "--folder", str(folder), "--session", "company-bot",
+            "--no-directive-block", "--dev-channel", "server:agentlayer", "--dev-channel", "server:agentlayer")
+    assert r.returncode == 0, r.stderr
+    data = json.loads((tmp_path / ".config/folder-bot/bots.json").read_text())
+    assert data["company"]["dev_channels"] == ["server:agentlayer"]          # 중복 제거
+    plist = tmp_path / "Library/LaunchAgents/com.folder-bot.company.plist"
+    assert plist.exists()
+    text = plist.read_text()
+    assert "--channels plugin:discord@claude-plugins-official --dangerously-load-development-channels server:agentlayer" in text
+    # 플래그 없이 재등록해도 유지된다
+    r = run(tmp_path, "add", "--name", "company", "--folder", str(folder), "--session", "company-bot", "--no-directive-block")
+    assert r.returncode == 0, r.stderr
+    data = json.loads((tmp_path / ".config/folder-bot/bots.json").read_text())
+    assert data["company"]["dev_channels"] == ["server:agentlayer"]
+    # --no-dev-channels로 제거
+    r = run(tmp_path, "add", "--name", "company", "--folder", str(folder), "--session", "company-bot",
+            "--no-directive-block", "--no-dev-channels")
+    assert r.returncode == 0, r.stderr
+    data = json.loads((tmp_path / ".config/folder-bot/bots.json").read_text())
+    assert "dev_channels" not in data["company"]
+    assert "--dangerously-load-development-channels" not in plist.read_text()
