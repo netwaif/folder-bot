@@ -211,3 +211,7 @@ python3 "<이 스킬 폴더>/generator/botctl.py" list
 
 doctor는 읽기 전용 — bots.json ↔ plist(리눅스: 유닛, systemd --user 상태) ↔ 지침 블록 ↔ 페어링 ↔ tmux 세션 생존 ↔
 MCP 연결(claude 엔진, 최신 로그 기준 — 낡은 성공 로그 오판 방지)을 대조 보고한다.
+리눅스 claude 봇은 유닛 파일 존재뿐 아니라 내용도 본다 — 유닛의 `ExecStart`·`ExecStop`·`Type=oneshot`·`KillMode=process`,
+사이드카(`<세션>.tmux-cmd`·`<세션>.up.sh`) 존재, 사이드카의 기동 명령이 bots.json 기대값(리모트 컨트롤·개발 채널 플래그 포함)과
+같은지. 어긋나면 `유닛 내용 불일치`·`사이드카 없음`·`기동 명령 불일치`로 알리고 처방은 전부 `botctl add` 재실행이다
+(PATH export는 셸마다 달라 비교에서 뺀다).

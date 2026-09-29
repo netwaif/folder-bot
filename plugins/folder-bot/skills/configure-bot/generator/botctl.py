@@ -974,6 +974,54 @@ def cmd_stop(a) -> None:
     print(f"중지: {bot['session']}")
 
 
+_PATH_EXPORT = re.compile(r'export PATH="[^"]*"')
+
+
+def cmd_key(cmd: str) -> str:
+    """기동 명령 비교용 정규화 — PATH export는 add를 돌린 셸마다 달라 비교에서 뺀다."""
+    return _PATH_EXPORT.sub('export PATH=""', cmd.strip())
+
+
+def launch_def_text(bot: dict) -> str | None:
+    """기동 명령이 실제로 적힌 곳의 본문 — macOS: plist / 리눅스: <세션>.tmux-cmd 사이드카
+    (유닛 본문에는 up.sh 경로만 있고 명령·플래그는 사이드카에 있다). 없으면 None."""
+    p = sidecar_paths(bot["session"])[0] if host_os() == "linux" else plist_path(bot)
+    try:
+        return p.read_text()
+    except OSError:
+        return None
+
+
+def linux_unit_findings(bot: dict) -> list[tuple[str, str]]:
+    """리눅스 claude 봇(autostart): 유닛·사이드카의 존재와 내용을 기대값과 대조한다(읽기 전용).
+    macOS plist 점검과 대등 — 파일 없음은 FAIL(systemd 없는 환경은 WARN), 내용 어긋남은 WARN."""
+    out = []
+    systemd = has_systemd()
+    session = bot["session"]
+    cmd_file, up = sidecar_paths(session)
+    unit = plist_path(bot)
+    if systemd and unit.exists():
+        text = unit.read_text()
+        want = ["Type=oneshot", "RemainAfterExit=yes", "KillMode=process",
+                f"ExecStart=/bin/bash {up}", "WantedBy=default.target"]
+        missing = [w for w in want if w not in text.splitlines()]
+        # tmux 경로는 환경마다 달라 세션 지정만 본다
+        if not re.search(rf"^ExecStop=-\S+ kill-session -t {re.escape(session)}$", text, re.M):
+            missing.append(f"ExecStop=-<tmux> kill-session -t {session}")
+        if missing:
+            out.append(("WARN", f"유닛 내용 불일치({' / '.join(missing)} 없음) — botctl add 재실행: {unit}"))
+    lack = "FAIL" if systemd else "WARN"   # systemd 없는 환경은 기존 규약대로 WARN(자동 기동이 애초에 없다)
+    for q in (cmd_file, up):
+        if not q.exists():
+            out.append((lack, f"사이드카 없음(add 재실행): {q}"))
+    if up.exists() and not (f"new-session -d -s {session} " in up.read_text()
+                            and str(cmd_file) in up.read_text() and os.access(up, os.X_OK)):
+        out.append(("WARN", f"사이드카 내용 불일치(세션·명령 파일 지정 또는 실행 권한) — botctl add 재실행: {up}"))
+    if cmd_file.exists() and cmd_key(cmd_file.read_text()) != cmd_key(build_cmd(bot)):
+        out.append(("WARN", f"기동 명령 불일치(bots.json과 다름) — botctl add 재실행: {cmd_file}"))
+    return out
+
+
 def mcp_log_dir(folder: str) -> Path:
     """discord 플러그인 MCP 로그 디렉토리 — 폴더 절대경로의 /·. 을 - 로 치환."""
     cache = "Library/Caches/claude-cli-nodejs" if host_os() == "darwin" else ".cache/claude-cli-nodejs"
@@ -1030,6 +1078,9 @@ def cmd_doctor(a) -> None:
             p = plist_path(b)
             if b["autostart"] and not p.exists() and (host_os() != "linux" or has_systemd()):
                 rep("FAIL", f"{'유닛' if host_os() == 'linux' else 'plist'} 없음: {p}")
+            if b["autostart"] and host_os() == "linux":
+                for level, msg in linux_unit_findings(b):
+                    rep(level, msg)
             trusted = False
             try:
                 proj = json.loads((home() / ".claude.json").read_text())
@@ -1042,8 +1093,8 @@ def cmd_doctor(a) -> None:
                             " (해당 폴더에서 claude를 한 번 열어 신뢰를 수락할 것)")
             if b.get("dev_channels"):
                 want = "--dangerously-load-development-channels " + " ".join(b["dev_channels"])
-                p = plist_path(b)
-                if p.exists() and want not in p.read_text():
+                text = launch_def_text(b)
+                if text is not None and want not in text:
                     rep("WARN", f"개발 채널 플래그가 기동 정의에 없음({want}) — botctl add 재실행")
             env = Path(b["state_dir"]) / ".env"
             if not env.exists():

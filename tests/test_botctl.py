@@ -1113,3 +1113,67 @@ def test_dev_channel_flag_in_plist_and_roundtrip(tmp_path):
     data = json.loads((tmp_path / ".config/folder-bot/bots.json").read_text())
     assert "dev_channels" not in data["company"]
     assert "--dangerously-load-development-channels" not in plist.read_text()
+
+
+# ---------------------------------------------------------------- doctor: 리눅스 유닛·사이드카 내용 점검
+
+def _linux_bot(tmp_path, *extra):
+    folder = tmp_path / "w"; folder.mkdir(exist_ok=True)
+    r = run_linux(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+                  "--no-directive-block", *extra)
+    assert r.returncode == 0, r.stderr
+    return tmp_path / ".config/systemd/user"
+
+
+def test_linux_doctor_clean_install_has_no_unit_findings(tmp_path):
+    _linux_bot(tmp_path, "--dev-channel", "server:agentlayer")
+    # PATH가 add 때와 달라도(다른 셸에서 doctor) 기동 명령 불일치로 보지 않는다
+    env = dict(os.environ, HOME=str(tmp_path), HARNESS_OS="Linux",
+               PATH=os.environ["PATH"] + os.pathsep + "/opt/doctor-only/bin")
+    r = subprocess.run([sys.executable, str(BOTCTL), "doctor", "--name", "b"],
+                       capture_output=True, text=True, env=env)
+    for bad in ("유닛 내용 불일치", "사이드카 없음", "기동 명령 불일치", "개발 채널 플래그"):
+        assert bad not in r.stdout, r.stdout
+    assert r.returncode == 0, r.stdout
+
+
+def test_linux_doctor_warns_unit_body_drift(tmp_path):
+    d = _linux_bot(tmp_path)
+    unit = d / "com.folder-bot.b.service"
+    unit.write_text(unit.read_text().replace(f"ExecStart=/bin/bash {d}/b-bot.up.sh",
+                                             "ExecStart=/bin/bash /elsewhere/up.sh"))
+    r = run_linux(tmp_path, "doctor", "--name", "b")
+    assert "[WARN] b: 유닛 내용 불일치" in r.stdout and "ExecStart" in r.stdout, r.stdout
+
+
+def test_linux_doctor_fails_on_missing_sidecar(tmp_path):
+    d = _linux_bot(tmp_path)
+    (d / "b-bot.tmux-cmd").unlink()
+    r = run_linux(tmp_path, "doctor", "--name", "b")
+    assert r.returncode == 1 and "[FAIL] b: 사이드카 없음" in r.stdout, r.stdout
+    assert "b-bot.tmux-cmd" in r.stdout
+
+
+def test_linux_doctor_warns_command_drift(tmp_path):
+    d = _linux_bot(tmp_path)
+    side = d / "b-bot.tmux-cmd"
+    side.write_text(side.read_text().replace(" --remote-control b-bot", ""))
+    r = run_linux(tmp_path, "doctor", "--name", "b")
+    assert "[WARN] b: 기동 명령 불일치" in r.stdout and str(side) in r.stdout, r.stdout
+
+
+def test_linux_doctor_checks_dev_channel_flag_in_sidecar(tmp_path):
+    d = _linux_bot(tmp_path, "--dev-channel", "server:agentlayer")
+    side = d / "b-bot.tmux-cmd"
+    side.write_text(side.read_text().replace(" --dangerously-load-development-channels server:agentlayer", ""))
+    r = run_linux(tmp_path, "doctor", "--name", "b")
+    assert "개발 채널 플래그가 기동 정의에 없음" in r.stdout, r.stdout
+
+
+def test_linux_doctor_without_systemd_checks_sidecar_as_warn(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run_no_systemd(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+                   "--no-directive-block")
+    (tmp_path / ".config/systemd/user/b-bot.tmux-cmd").unlink()
+    r = run_no_systemd(tmp_path, "doctor", "--name", "b")
+    assert r.returncode == 0 and "[WARN] b: 사이드카 없음" in r.stdout, r.stdout + r.stderr
