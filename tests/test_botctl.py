@@ -1259,3 +1259,57 @@ def test_bot_restart_prefers_plist_over_stale_sidecar(tmp_path):
 def test_bot_restart_failure_names_all_sources(tmp_path):
     r = _restart_dry(tmp_path, "Darwin")
     assert r.returncode == 1 and ".config/folder-bot/b-bot.tmux-cmd" in r.stdout, r.stdout
+
+
+# ---------------------------------------------------------------- 봇 자기 멘션 예외
+
+import base64
+
+BOT_ID = "123456789012345678"
+REAL_SHAPED_TOKEN = base64.b64encode(BOT_ID.encode()).decode().rstrip("=") + ".Gabcde.fake-hmac-part"
+
+
+def _paired(tmp_path, token):
+    folder = tmp_path / "w"; folder.mkdir(exist_ok=True)
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--no-autostart", "--no-directive-block")
+    r = run(tmp_path, "pair", "--name", "b", "--token", token, "--user-id", "111", "--channel-id", "222")
+    assert r.returncode == 0, r.stderr
+    return folder, r
+
+
+def test_pair_records_bot_id_from_token(tmp_path):
+    folder, r = _paired(tmp_path, REAL_SHAPED_TOKEN)
+    assert (folder / ".discord-state/bot-id").read_text().strip() == BOT_ID
+    assert REAL_SHAPED_TOKEN not in r.stdout and "fake-hmac-part" not in r.stdout   # 토큰은 출력하지 않는다
+    assert BOT_ID in r.stdout
+
+
+def test_pair_with_undecodable_token_skips_bot_id(tmp_path):
+    folder, r = _paired(tmp_path, "TOK")
+    assert not (folder / ".discord-state/bot-id").exists()
+    r = run(tmp_path, "doctor", "--name", "b")
+    assert "[WARN] b: 봇 ID 파일 없음" in r.stdout, r.stdout
+
+
+def test_add_backfills_bot_id_for_already_paired_bot(tmp_path):
+    folder, _ = _paired(tmp_path, REAL_SHAPED_TOKEN)
+    bot_id = folder / ".discord-state/bot-id"
+    bot_id.unlink()   # 예전 버전에서 페어링한 봇
+    r = run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+            "--no-autostart", "--no-directive-block")
+    assert r.returncode == 0 and bot_id.read_text().strip() == BOT_ID, r.stdout + r.stderr
+    r = run(tmp_path, "doctor", "--name", "b")
+    assert "봇 ID 파일 없음" not in r.stdout
+    # 제거해도 페어링 파일과 함께 보존
+    run(tmp_path, "remove", "--name", "b")
+    assert bot_id.exists()
+
+
+def test_directive_block_has_self_mention_exception(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot", "--no-autostart")
+    text = (folder / "CLAUDE.md").read_text()
+    assert "이 봇 자신을 멘션" in text and "bot-id" in text
+    # 기존 규칙(타인 멘션 무응답)은 그대로
+    assert "응답·조회·도구 실행을 전부 하지" in text

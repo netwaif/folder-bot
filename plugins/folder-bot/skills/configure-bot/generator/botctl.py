@@ -561,6 +561,43 @@ def write_codex_plists(bot: dict) -> list[str]:
     return out
 
 
+def bot_id_from_token(token: str) -> str | None:
+    """디스코드 봇 토큰의 첫 마디는 봇 사용자 ID의 base64다 — 네트워크 호출 없이 ID를 얻는다. 형식이 다르면 None."""
+    import base64
+    import binascii
+    head = token.strip().split(".", 1)[0]
+    try:
+        raw = base64.urlsafe_b64decode(head + "=" * (-len(head) % 4)).decode("ascii")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return None
+    return raw if re.fullmatch(r"\d{15,22}", raw) else None
+
+
+def bot_id_path(bot: dict) -> Path:
+    return Path(bot["state_dir"]) / "bot-id"
+
+
+def write_bot_id(bot: dict, token: str | None = None) -> list[str]:
+    """<state_dir>/bot-id에 봇 사용자 ID를 기록(멱등) — 지침 블록의 '자기 멘션' 판정 근거. ID는 비밀이 아니다.
+    token이 없으면 이미 페어링된 .env에서 읽는다(예전 버전 페어링 보정). 토큰 값은 출력하지 않는다."""
+    if token is None:
+        try:
+            m = re.search(r"^DISCORD_BOT_TOKEN=(.+)$", (Path(bot["state_dir"]) / ".env").read_text(), re.M)
+        except OSError:
+            return []
+        if not m:
+            return []
+        token = m.group(1)
+    bid = bot_id_from_token(token)
+    if bid is None:
+        return []
+    p = bot_id_path(bot)
+    if p.exists() and p.read_text().strip() == bid:
+        return []
+    p.write_text(bid + "\n")
+    return [f"봇 ID 기록: {p} ({bid} — 자기 멘션 판정용)"]
+
+
 def allow_project_mcp(folder: Path) -> list[str]:
     """폴더의 프로젝트 MCP 자동 허용 — 무인 재시작이 승인 다이얼로그에 막히지 않게 한다.
 
@@ -641,6 +678,7 @@ def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
         lines += install_scripts()
         lines += write_plist(bot)
         lines += write_restart_sidecar(bot)
+        lines += write_bot_id(bot)   # 이미 페어링된 봇(예전 버전)의 보정 — 미페어링이면 무동작
     if bot["directive_block"]:
         lines += install_block(bot)
     if allow_mcp:
@@ -915,6 +953,11 @@ def cmd_pair(a) -> None:
               "groups": {a.channel_id: {"requireMention": False, "allowFrom": [a.user_id]}},
               "pending": {}}
     (st / "access.json").write_text(json.dumps(access, ensure_ascii=False, indent=2) + "\n")
+    stale = bot_id_path(bot)
+    if stale.exists():
+        stale.unlink()   # --force 재페어링: 다른 봇 계정의 ID가 남지 않게
+    for line in write_bot_id(bot, token):
+        print(line)
     consume_token_file()
     print(f"페어링 완료: {st}")
 
@@ -1140,6 +1183,9 @@ def cmd_doctor(a) -> None:
             env = Path(b["state_dir"]) / ".env"
             if not env.exists():
                 rep("WARN", f"페어링 안 됨(.env 없음): {env}")
+            elif not bot_id_path(b).exists():
+                rep("WARN", f"봇 ID 파일 없음 — 지침 블록의 자기 멘션 예외가 동작하지 않는다"
+                            f"(botctl add 재실행, 그래도 없으면 토큰 형식에서 ID를 못 읽은 것): {bot_id_path(b)}")
             mcp = mcp_log_dir(b["folder"])
             logs = sorted(mcp.glob("*.jsonl"),
                           key=lambda f: (f.stat().st_mtime, f.name)) if mcp.is_dir() else []

@@ -32,6 +32,7 @@
 - LaunchAgent 생성(부팅 자동 기동)
 - 자동 기동을 끈 봇(`--no-autostart`)은 기동 명령을 `~/.config/folder-bot/<세션>.tmux-cmd`에 남겨 원격 재시작이 그대로 된다
 - 폴더 CLAUDE.md에 봇 지침 블록 추가(마커 방식 — 기존 내용 무수정, 제거 시 원문 복원)
+- 여럿이 쓰는 채널에서 다른 사람을 멘션한 메시지에는 끼어들지 않고, 봇 자신을 멘션한 메시지는 평소대로 처리한다(봇 ID는 페어링 때 `.discord-state/bot-id`에 기록)
 - 개발 채널 플래그(`dev_channels`, 예: agentlayer 수신함 채널 `--dev-channel server:agentlayer`)를 기동 명령에 붙이고, 기동 때 뜨는 확인창을 bot-up이 Enter 한 번으로 넘긴다(0.1.22)
 
 **수동** (스킬이 단계별로 안내):
