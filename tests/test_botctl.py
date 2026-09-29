@@ -1177,3 +1177,85 @@ def test_linux_doctor_without_systemd_checks_sidecar_as_warn(tmp_path):
     (tmp_path / ".config/systemd/user/b-bot.tmux-cmd").unlink()
     r = run_no_systemd(tmp_path, "doctor", "--name", "b")
     assert r.returncode == 0 and "[WARN] b: 사이드카 없음" in r.stdout, r.stdout + r.stderr
+
+
+# ---------------------------------------------------------------- --no-autostart 재시작 사이드카
+
+RESTART_SH = BOTCTL.parent.parent / "assets/bot-restart.sh"
+
+
+def _restart_dry(tmp_path, os_name, session="b-bot"):
+    env = dict(os.environ, HOME=str(tmp_path), HARNESS_OS=os_name, BOT_RESTART_DETACHED="1",
+               BOT_RESTART_DRY_RUN="1", BOT_RESTART_LOG=str(tmp_path / "r.log"))
+    return subprocess.run(["bash", str(RESTART_SH), session], capture_output=True, text=True, env=env)
+
+
+@pytest.mark.parametrize("runner,os_name", [(run, "Darwin"), (run_linux, "Linux")])
+def test_no_autostart_leaves_restart_sidecar(tmp_path, runner, os_name):
+    folder = tmp_path / "w"; folder.mkdir()
+    args = ("add", "--name", "b", "--folder", str(folder), "--session", "b-bot", "--no-directive-block")
+    r = runner(tmp_path, *args, "--no-autostart")
+    assert r.returncode == 0, r.stderr
+    side = tmp_path / ".config/folder-bot/b-bot.tmux-cmd"
+    assert side.exists() and "재시작 사이드카" in r.stdout, r.stdout
+    cmd = side.read_text()
+    assert f"cd {folder}" in cmd and "/.local/bin/bot-up -n b-bot --remote-control b-bot" in cmd
+    assert not (tmp_path / "Library/LaunchAgents/com.folder-bot.b.plist").exists()
+    assert not list((tmp_path / ".config/systemd/user").glob("*")) if os_name == "Linux" else True
+    # 멱등: 같은 내용이면 다시 쓰지 않는다
+    mtime = side.stat().st_mtime_ns
+    r = runner(tmp_path, *args, "--no-autostart")
+    assert side.stat().st_mtime_ns == mtime and "재시작 사이드카" not in r.stdout
+    # bot-restart가 plist·유닛 없이 사이드카에서 기동 명령을 읽는다
+    r = _restart_dry(tmp_path, os_name)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "CMD=" + cmd.strip() in r.stdout
+    cache = "Library/Caches" if os_name == "Darwin" else ".cache"
+    assert f"MCP_LOG_DIR={tmp_path}/{cache}/claude-cli-nodejs/" in r.stdout
+    # doctor: 정상 설치면 사이드카 지적 없음
+    r = runner(tmp_path, "doctor", "--name", "b")
+    assert "재시작 사이드카" not in r.stdout, r.stdout
+    # autostart로 되돌리면 사이드카를 걷는다(정본은 plist·유닛 하나)
+    r = runner(tmp_path, *args)
+    assert r.returncode == 0 and not side.exists(), r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("runner", [run, run_linux])
+def test_remove_deletes_restart_sidecar(tmp_path, runner):
+    folder = tmp_path / "w"; folder.mkdir()
+    runner(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+           "--no-directive-block", "--no-autostart")
+    side = tmp_path / ".config/folder-bot/b-bot.tmux-cmd"
+    assert side.exists()
+    r = runner(tmp_path, "remove", "--name", "b")
+    assert r.returncode == 0 and not side.exists() and "재시작 사이드카 제거" in r.stdout, r.stdout + r.stderr
+
+
+def test_doctor_checks_restart_sidecar(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot",
+        "--no-directive-block", "--no-autostart", "--dev-channel", "server:agentlayer")
+    side = tmp_path / ".config/folder-bot/b-bot.tmux-cmd"
+    orig = side.read_text()
+    side.write_text(orig.replace(" --dangerously-load-development-channels server:agentlayer", ""))
+    r = run(tmp_path, "doctor", "--name", "b")
+    assert "[WARN] b: 재시작 사이드카 기동 명령 불일치" in r.stdout, r.stdout
+    assert "개발 채널 플래그가 기동 정의에 없음" in r.stdout
+    side.unlink()
+    r = run(tmp_path, "doctor", "--name", "b")
+    assert "[WARN] b: 재시작 사이드카 없음" in r.stdout and "bot-restart" in r.stdout, r.stdout
+
+
+def test_bot_restart_prefers_plist_over_stale_sidecar(tmp_path):
+    folder = tmp_path / "w"; folder.mkdir()
+    (tmp_path / "Library/LaunchAgents").mkdir(parents=True)
+    run(tmp_path, "add", "--name", "b", "--folder", str(folder), "--session", "b-bot", "--no-directive-block")
+    cfg = tmp_path / ".config/folder-bot"
+    (cfg / "b-bot.tmux-cmd").write_text("/bin/zsh -lc 'cd /stale; exec bot-up'\n")
+    r = _restart_dry(tmp_path, "Darwin")
+    assert r.returncode == 0 and f"cd {folder}" in r.stdout and "/stale" not in r.stdout, r.stdout + r.stderr
+
+
+def test_bot_restart_failure_names_all_sources(tmp_path):
+    r = _restart_dry(tmp_path, "Darwin")
+    assert r.returncode == 1 and ".config/folder-bot/b-bot.tmux-cmd" in r.stdout, r.stdout

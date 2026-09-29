@@ -55,6 +55,12 @@ python3 "<이 스킬 폴더>/generator/botctl.py" add --name <이름> --folder <
 지침 블록이 이미 자체 규칙으로 있는 폴더 — 예: 멀티 에이전트 하네스의 오케스트레이터 — 는
 `--no-directive-block`. 개발 채널(agentlayer channel 등)을 쓰는 봇은 `--dev-channel server:agentlayer`(반복 가능, 제거는 `--no-dev-channels`).) bot-up은 기동 인자의 플래그를 `--flag 값`·`--flag=값` 두 형태 모두 인식한다(확인창 감시·`--permission-mode` 기본값 주입 판정). 출력을 그대로 보여준다.
 
+`--no-autostart` 봇은 plist·유닛이 없는 대신 add가 기동 명령을 재시작 사이드카
+`~/.config/folder-bot/<세션>.tmux-cmd`에 남긴다(멱등) — `bot-restart`(디스코드 원격 재시작 포함)가
+plist·유닛 사이드카가 없을 때 여기서 명령을 읽는다. autostart로 다시 등록하면 걷히고(정본은 하나),
+remove가 같이 지우며, doctor가 존재·내용을 점검한다. 예전 버전에서 `--no-autostart`로 등록한 봇은
+같은 인자로 `botctl add`를 한 번 다시 돌리면 사이드카가 생긴다.
+
 usage-coach(대시보드)가 설치돼 있으면 add가 봇 폴더 `.claude/settings.local.json`에
 statusLine을 자동 주입한다(대시보드 클로드 카드의 데이터원 — 미주입 시 카드가 영구 공백,
 2026-08-05 실측). 사용자가 이미 설정한 statusLine은 건드리지 않고, remove가 주입분만 회수한다.
@@ -201,6 +207,7 @@ python3 "<이 스킬 폴더>/generator/botctl.py" remove --name <이름>
 
 페어링 파일(.discord-state)은 보존된다(재추가 대비). launchctl bootout은 쓰지 않는다.
 리눅스는 유닛을 `disable`하고 유닛·사이드카(`<세션>.tmux-cmd`·`<세션>.up.sh`)를 지운다 — 잔존 0.
+`--no-autostart` 봇의 재시작 사이드카(`~/.config/folder-bot/<세션>.tmux-cmd`)도 같이 지운다.
 
 ## 점검
 
@@ -215,3 +222,4 @@ MCP 연결(claude 엔진, 최신 로그 기준 — 낡은 성공 로그 오판 �
 사이드카(`<세션>.tmux-cmd`·`<세션>.up.sh`) 존재, 사이드카의 기동 명령이 bots.json 기대값(리모트 컨트롤·개발 채널 플래그 포함)과
 같은지. 어긋나면 `유닛 내용 불일치`·`사이드카 없음`·`기동 명령 불일치`로 알리고 처방은 전부 `botctl add` 재실행이다
 (PATH export는 셸마다 달라 비교에서 뺀다).
+`--no-autostart` 봇(claude)은 재시작 사이드카의 존재·기동 명령 일치를 같은 방식으로 본다(없으면 원격 재시작 불가 WARN).

@@ -7,6 +7,8 @@ launchctl bootout은 실행하지 않는다 — 파일 생성/삭제 + tmux kill
 OS 분기: macOS=LaunchAgent plist, 리눅스(VPS·WSL2)=systemd 사용자 유닛(하네스 6차 2026-09-07 패턴).
   리눅스 유닛은 com.folder-bot.<이름>.service(라벨 동일 — agentlayer wiring 매칭용) +
   <세션>.tmux-cmd·<세션>.up.sh 사이드카(bot-restart.sh·agentlayer가 읽음).
+--no-autostart(claude): plist·유닛이 없으므로 기동 명령을 ~/.config/folder-bot/<세션>.tmux-cmd 재시작 사이드카로
+  남긴다 — bot-restart가 plist·유닛 사이드카가 없을 때 읽는다(autostart면 걷는다, 정본은 하나).
 엔진: claude(discord 플러그인) / codex·agy(codex-discord 브리지 인스턴스 — systemd 없으면 데몬도 tmux 세션 <이름>-daemon).
 """
 from __future__ import annotations  # macOS 기본 python3(3.9)에서 `X | None` 표기 크래시 방지 — 8/6 실측
@@ -280,6 +282,32 @@ def write_plist(bot: dict) -> list[str]:
         p.write_bytes(blob)
         return [f"plist 생성: {p} (다음 부팅부터 자동 기동)"]
     return []
+
+
+def restart_sidecar_path(session: str) -> Path:
+    """--no-autostart 봇의 기동 명령 사이드카 — bots.json과 같은 설정 디렉터리, 이름은 리눅스 유닛 사이드카와 같은 규약."""
+    return config_dir() / f"{session}.tmux-cmd"
+
+
+def write_restart_sidecar(bot: dict) -> list[str]:
+    """autostart off: 기동 명령을 사이드카로 남긴다(멱등). autostart on: plist·유닛이 정본이므로 걷는다."""
+    p = restart_sidecar_path(bot["session"])
+    if bot["autostart"]:
+        return remove_restart_sidecar(bot)
+    body = build_cmd(bot) + "\n"
+    if p.exists() and p.read_text() == body:
+        return []
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+    return [f"재시작 사이드카 생성: {p} (자동 기동 없음 — bot-restart가 기동 명령을 여기서 읽는다)"]
+
+
+def remove_restart_sidecar(bot: dict) -> list[str]:
+    p = restart_sidecar_path(bot["session"])
+    if not p.exists():
+        return []
+    p.unlink()
+    return [f"재시작 사이드카 제거: {p}"]
 
 
 MARK_START = "<!-- store:discord-bot:start -->"
@@ -612,6 +640,7 @@ def install_all(bot: dict, allow_mcp: bool = False) -> list[str]:
     else:
         lines += install_scripts()
         lines += write_plist(bot)
+        lines += write_restart_sidecar(bot)
     if bot["directive_block"]:
         lines += install_block(bot)
     if allow_mcp:
@@ -827,6 +856,8 @@ def cmd_remove(a) -> None:
         print(line)
     subprocess.run([str(home() / ".local/bin/bot-thread"), "gc", a.name, "--all"],
                    capture_output=True)  # 스레드 창만 정리, threads.json은 보존(토큰 파일과 같은 취급)
+    for line in remove_restart_sidecar(bot):
+        print(line)
     if host_os() == "linux":
         # disable만(--now 없이) — 세션 종료는 stop 명령의 몫(macOS remove와 동형: 파일만 걷는다)
         for line in remove_units([f"com.folder-bot.{bot['name']}"], [bot["session"]], stop=False):
@@ -984,8 +1015,11 @@ def cmd_key(cmd: str) -> str:
 
 def launch_def_text(bot: dict) -> str | None:
     """기동 명령이 실제로 적힌 곳의 본문 — macOS: plist / 리눅스: <세션>.tmux-cmd 사이드카
-    (유닛 본문에는 up.sh 경로만 있고 명령·플래그는 사이드카에 있다). 없으면 None."""
-    p = sidecar_paths(bot["session"])[0] if host_os() == "linux" else plist_path(bot)
+    (유닛 본문에는 up.sh 경로만 있고 명령·플래그는 사이드카에 있다) / autostart off: 재시작 사이드카. 없으면 None."""
+    if not bot["autostart"]:
+        p = restart_sidecar_path(bot["session"])
+    else:
+        p = sidecar_paths(bot["session"])[0] if host_os() == "linux" else plist_path(bot)
     try:
         return p.read_text()
     except OSError:
@@ -1081,6 +1115,13 @@ def cmd_doctor(a) -> None:
             if b["autostart"] and host_os() == "linux":
                 for level, msg in linux_unit_findings(b):
                     rep(level, msg)
+            if not b["autostart"]:
+                rs = restart_sidecar_path(b["session"])
+                if not rs.exists():
+                    rep("WARN", f"재시작 사이드카 없음 — bot-restart(디스코드 원격 재시작)가 기동 명령을 못 찾는다,"
+                                f" botctl add 재실행: {rs}")
+                elif cmd_key(rs.read_text()) != cmd_key(build_cmd(b)):
+                    rep("WARN", f"재시작 사이드카 기동 명령 불일치(bots.json과 다름) — botctl add 재실행: {rs}")
             trusted = False
             try:
                 proj = json.loads((home() / ".claude.json").read_text())

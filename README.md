@@ -30,6 +30,7 @@
 - `~/.config/folder-bot/bots.json`에 봇 정의 기록(폴더·세션명·리모트 컨트롤 — 전부 설정으로 관리)
 - `~/.local/bin`에 `bot-up`(다중 봇 동시 부팅 경합 직렬화)·`bot-restart`(원격 재시작) 설치
 - LaunchAgent 생성(부팅 자동 기동)
+- 자동 기동을 끈 봇(`--no-autostart`)은 기동 명령을 `~/.config/folder-bot/<세션>.tmux-cmd`에 남겨 원격 재시작이 그대로 된다
 - 폴더 CLAUDE.md에 봇 지침 블록 추가(마커 방식 — 기존 내용 무수정, 제거 시 원문 복원)
 - 개발 채널 플래그(`dev_channels`, 예: agentlayer 수신함 채널 `--dev-channel server:agentlayer`)를 기동 명령에 붙이고, 기동 때 뜨는 확인창을 bot-up이 Enter 한 번으로 넘긴다(0.1.22)
 

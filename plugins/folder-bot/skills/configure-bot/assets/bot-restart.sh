@@ -4,13 +4,15 @@
 # 문제: 봇이 자기 자신을 죽이면 재기동을 마저 할 수 없다 (respawn-pane -k가 자기 프로세스를 죽임).
 # 해법: 재시작 작업을 tmux 서버에 위탁(run-shell -b)하고 즉시 반환 — pane이 죽어도 스크립트는
 #       tmux 서버 아래에서 살아남아 respawn을 수행한다. 기동 명령은 macOS: LaunchAgent plist에서
-#       실시간 추출 / 리눅스: systemd 유닛 옆 <세션>.tmux-cmd 사이드카(단일 정본 유지), 연결 판정은
+#       실시간 추출 / 리눅스: systemd 유닛 옆 <세션>.tmux-cmd 사이드카(단일 정본 유지), 둘 다 없으면
+#       (--no-autostart 봇) ~/.config/folder-bot/<세션>.tmux-cmd 재시작 사이드카. 연결 판정은
 #       bot-up.sh와 같은 MCP 로그 감시.
 #       결과는 웹훅(선택)으로 통지 — 봇이 죽은 뒤에도 사용자 폰에 성패가 도착한다.
 #
 # 사용: bot-restart.sh <tmux-세션명>   (예: bot-restart.sh orchestrator)
-#       - 대상 봇의 LaunchAgent plist(tmux new-session -s <세션명> ...) 또는 리눅스 사이드카
-#         ~/.config/systemd/user/<세션명>.tmux-cmd 가 설치돼 있어야 한다(botctl add가 생성).
+#       - 대상 봇의 LaunchAgent plist(tmux new-session -s <세션명> ...), 리눅스 사이드카
+#         ~/.config/systemd/user/<세션명>.tmux-cmd, 또는 --no-autostart 봇의 재시작 사이드카
+#         ~/.config/folder-bot/<세션명>.tmux-cmd 중 하나가 있어야 한다(botctl add가 생성).
 #       - HARNESS_OS(Darwin/Linux)는 테스트 override. BOT_RESTART_DRY_RUN=1이면 기동 명령·로그 경로만 출력.
 #       - 웹훅: $BOT_RESTART_WEBHOOK 또는 ~/.config/usage-coach/discord.json 의 webhook_url. 없으면 생략.
 set -uo pipefail
@@ -49,6 +51,7 @@ OS_NAME="${HARNESS_OS:-$(uname -s)}"
 
 # 기동 명령 = macOS: LaunchAgent plist에서 추출 (tmux new-session -s <NAME> 의 마지막 인자)
 #            리눅스: botctl이 남긴 ~/.config/systemd/user/<NAME>.tmux-cmd 사이드카
+#            둘 다 없으면: ~/.config/folder-bot/<NAME>.tmux-cmd (--no-autostart 봇)
 CMD=""
 if [[ "$OS_NAME" == Linux ]]; then
   [[ -f "$HOME/.config/systemd/user/$NAME.tmux-cmd" ]] && CMD=$(cat "$HOME/.config/systemd/user/$NAME.tmux-cmd")
@@ -63,8 +66,11 @@ if '-s' in a and a[a.index('-s')+1]=='$NAME' and 'new-session' in a: print(a[-1]
 " 2>/dev/null)
   [[ -n "$CMD" ]] && break
 done
+# --no-autostart 봇: plist·유닛이 없다 — botctl이 남긴 재시작 사이드카에서 읽는다(plist·유닛 사이드카가 있으면 그쪽이 우선)
+RESTART_SIDECAR="$HOME/.config/folder-bot/$NAME.tmux-cmd"
+[[ -z "$CMD" && -f "$RESTART_SIDECAR" ]] && CMD=$(cat "$RESTART_SIDECAR")
 if [[ -z "$CMD" ]]; then
-  log "실패: 세션 '$NAME'의 기동 명령(LaunchAgent plist / systemd <세션>.tmux-cmd)을 찾지 못함"
+  log "실패: 세션 '$NAME'의 기동 명령(LaunchAgent plist / systemd <세션>.tmux-cmd / $RESTART_SIDECAR)을 찾지 못함 — botctl add 재실행"
   exit 1
 fi
 
