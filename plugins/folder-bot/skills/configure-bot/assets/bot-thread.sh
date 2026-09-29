@@ -45,6 +45,17 @@ except (OSError, KeyError, ValueError):
 print(b["folder"], b.get("session", sys.argv[2] + "-bot"))
 EOF
 )
+# 개발 채널(dev_channels, 예: server:agentlayer) — 메인 봇과 같은 채널을 스레드 세션에도 붙인다.
+# 그래야 agentlayer send가 스레드 세션에도 tmux 키 입력 대신 채널로 지시를 넣는다. 값은 안전한 글자만 받는다.
+DEV_CHANNELS=$(python3 - "$BOTS_JSON" "$BOT" <<'EOF'
+import json, re, sys
+try:
+    b = json.load(open(sys.argv[1]))[sys.argv[2]]
+except (OSError, KeyError, ValueError):
+    sys.exit(0)
+print(" ".join(c for c in (b.get("dev_channels") or []) if isinstance(c, str) and re.fullmatch(r"[A-Za-z0-9:_.@/-]+", c)))
+EOF
+)
 [[ -n "$FOLDER" ]] || { echo "오류: bots.json에 봇 없음: $BOT" >&2; exit 1; }
 STATE="$FOLDER/.discord-state"
 MAP="$STATE/threads.json"
@@ -182,16 +193,29 @@ cmd_ensure() {
   # JSON을 인라인으로 넘기면 tmux 명령 문자열의 따옴표가 깨져 세션이 즉시 종료된다(2026-09-11 실측) → 파일로.
   local settings="$STATE/thread-settings.json"
   printf '%s\n' '{"enabledPlugins":{"discord@claude-plugins-official":false}}' > "$settings"
-  local inner="cd '$FOLDER'; export DISCORD_THREAD_ID='$tid' DISCORD_BOT_NAME='$BOT'; exec $CLAUDE_BIN -n '$agent' --permission-mode auto --settings '$settings' $resume_flag"
+  local dev_flag="" ch
+  for ch in $DEV_CHANNELS; do dev_flag+=" --dangerously-load-development-channels $ch"; done
+  local inner="cd '$FOLDER'; export DISCORD_THREAD_ID='$tid' DISCORD_BOT_NAME='$BOT'; exec $CLAUDE_BIN -n '$agent' --permission-mode auto --settings '$settings' $resume_flag$dev_flag"
   local new_pane
   new_pane=$("$TMUX_BIN" new-window -d -P -F '#{pane_id}' -t "$SESSION" -n "$win" -c "$FOLDER" "bash -lc \"$inner\"") || { echo "오류: 창 생성 실패" >&2; return 1; }
   map_set "$tid" "pane=$new_pane"
   log "창 생성: $SESSION:$win $new_pane ($resume_flag)"
   # 준비 대기: 입력 프롬프트(❯)가 뜰 때까지
-  local t="${BOT_THREAD_READY_TIMEOUT:-60}" i=0
+  # 개발 채널 확인창("WARNING: Loading development channels")은 매 기동마다 뜨는 고정 화면 — Enter 한 번으로 넘긴다.
+  # 확인창에도 '❯'가 있으므로 확인창을 먼저 가려야 한다(준비로 오인하면 첫 지시가 확인창에 들어간다).
+  local t="${BOT_THREAD_READY_TIMEOUT:-60}" i=0 screen confirmed=0
   while (( i < t )); do
     sleep 1; i=$((i+1))
-    if "$TMUX_BIN" capture-pane -p -t "$new_pane" 2>/dev/null | grep -q '❯'; then
+    screen=$("$TMUX_BIN" capture-pane -p -t "$new_pane" 2>/dev/null || true)
+    if grep -q 'WARNING: Loading development channels' <<<"$screen"; then
+      if (( confirmed == 0 )); then
+        "$TMUX_BIN" send-keys -t "$new_pane" Enter
+        confirmed=1
+        log "창 $win 개발 채널 확인창 통과(Enter 1회)"
+      fi
+      continue
+    fi
+    if grep -q '❯' <<<"$screen"; then
       map_set "$tid" "window=$win"; echo "$agent"; cmd_gc --quiet; return 0
     fi
     "$TMUX_BIN" list-panes -t "$new_pane" >/dev/null 2>&1 || { echo "오류: 스레드 세션이 바로 종료됨 — 창 $win 로그 확인" >&2; return 1; }
