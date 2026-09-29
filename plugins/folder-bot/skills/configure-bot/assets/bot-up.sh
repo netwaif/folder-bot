@@ -28,6 +28,16 @@ fi
 
 log() { echo "[bot-up $(date '+%F %T')] $*"; }
 
+# 인자 목록에 플래그가 있는지 — `--flag value`와 `--flag=value` 두 형태 모두 인식한다.
+# 사용: has_flag --permission-mode "$@"
+has_flag() {
+  local f="$1" a; shift
+  for a in "$@"; do
+    [[ "$a" == "$f" || "$a" == "$f="* ]] && return 0
+  done
+  return 1
+}
+
 # --- 락 획득 (mkdir 원자성 + 사망/노화 스틸) ---
 acquired=0
 deadline=$((SECONDS + ACQUIRE_TIMEOUT))
@@ -89,7 +99,7 @@ fi
 # 세션 한정 번역. 프로젝트 settings.local.json의 defaultMode는 user 스코프 전용이라
 # 효력이 없다(2026-08-05 E2E 실측: 주입돼도 manual mode 유지). 세션 플래그는
 # 봇에게만 적용돼 계정 전역을 오염하지 않는다. 호출자 지정이 있으면 존중.
-if [[ " $* " != *" --permission-mode "* ]]; then
+if ! has_flag --permission-mode "$@"; then
   set -- "$@" --permission-mode "${BOT_PERMISSION_MODE:-auto}"
 fi
 
@@ -115,7 +125,7 @@ fi
 # --- 개발 채널 확인창 자동 통과 (agentlayer channel serve 등 server: 채널은 research preview라 기동마다 확인창이 뜬다) ---
 # 확인창("WARNING: Loading development channels" / "I am using this for local development")은 매번 같은 고정 화면이므로
 # Enter 한 번을 부팅 절차로 보낸다 — 메시지 주입이 아니다. 로그는 pane이 아니라 파일로(감시자는 fd를 분리한다).
-if [[ " $* " == *" --dangerously-load-development-channels "* && -n "${TMUX_PANE:-}" ]]; then
+if has_flag --dangerously-load-development-channels "$@" && [[ -n "${TMUX_PANE:-}" ]]; then
   TMUX_BIN="${TMUX_BIN:-$(command -v tmux || true)}"
   [[ -z "$TMUX_BIN" && -x /opt/homebrew/bin/tmux ]] && TMUX_BIN=/opt/homebrew/bin/tmux
   DEV_LOG="${BOT_UP_LOG:-$HOME/.claude/logs/bot-up.log}"; mkdir -p "$(dirname "$DEV_LOG")"
