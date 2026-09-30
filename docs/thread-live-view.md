@@ -18,7 +18,8 @@
 ```
 디스코드 스레드 ──게이트웨이──▶ 메인 봇 세션(라이브 TUI, 플러그인 보유)
    UserPromptSubmit 훅(bot-thread-route): chat_id가 등록 채널이 아니면
-     → bot-thread kind(REST) → ensure(창·세션 보장) → fetch-attachments → deliver(스레드 pane에 bracketed paste)
+     → bot-thread kind(REST) → ensure(창·세션 보장) → fetch-attachments
+     → agentlayer send --json <세션>:t<short> - (채널 수신함, 0.1.25) → 실패 시에만 deliver(스레드 pane에 bracketed paste)
      → 첫 메시지면 담당 안내 post → exit 2 (메인은 이 메시지를 보지 않는다)
                                                           스레드 세션(라이브 TUI, 창 t<short>, 플러그인 비활성)
                                                             └─ Stop 훅(bot-thread-stop) → bot-thread post → REST → 스레드
@@ -36,7 +37,7 @@
 |---|---|
 | `kind <chat_id>` | REST 채널 조회 → `channel` / `thread <parent_id>` / `dm`. 결과는 threads.json에 캐시 |
 | `ensure <봇> <thread_id>` | 맵 조회(없으면 uuid 발급) → 봇 tmux 세션에 창 `t<스레드ID 끝 6자리>`가 없으면(프로세스 트리에 claude 없음) 생성:<br>`claude -n <봇>-t<short> --permission-mode auto --settings <state>/thread-settings.json (--session-id <uuid> \| --resume <uuid>)`<br>입력 프롬프트(❯)가 뜰 때까지 최대 60초 대기 → 세션명 출력. 새 세션이면 `fresh=1` 표식 |
-| `deliver <봇> <thread_id> -` | stdin 원문을 스레드 pane에 bracketed paste + Enter(미제출 시 재전송) |
+| `deliver <봇> <thread_id> -` | stdin 원문을 스레드 pane에 bracketed paste + Enter(미제출 시 재전송). 0.1.25부터 되돌아갈 곳 — 정본은 `agentlayer send`(채널). 붙여넣기는 이미지 경로가 든 여러 줄에서 "[Pasted text …]"로 접힌 채 제출되지 않는다(2026-09-30 실기) |
 | `fetch-attachments <봇> <chat_id> <message_id>` | 첨부를 `.discord-state/inbox/<mid>/`에 받고 경로 출력 |
 | `rotate <봇> <thread_id>` / `fresh` | 새 uuid로 회전(옛 ID previous)·창 닫기 / fresh 표식 1회 소거 |
 | `post <thread_id> (<text> \| --file <path>)` | 봇 폴더 `.discord-state/.env`의 토큰으로 `POST /channels/<id>/messages`(2000자 청크, 파일은 multipart) |

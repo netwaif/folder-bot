@@ -4,15 +4,18 @@
 #
 # 흐름: prompt의 <channel … chat_id="…"> 태그 → 등록 채널(access.json groups)이면 exit 0(메인이 처리)
 #       → bot-thread kind로 스레드 판별 → bot-thread ensure(창·세션 보장) → 첨부 다운로드(REST)
-#       → bot-thread deliver(스레드 pane에 원문 붙여넣기) → 첫 메시지면 담당 안내 게시 → exit 2(메인 처리 차단)
+#       → agentlayer send(채널·큐, 스레드 세션의 수신함으로) → 실패 시에만 bot-thread deliver(스레드 pane에 원문 붙여넣기)
+#       → 첫 메시지면 담당 안내 게시 → exit 2(메인 처리 차단)
+# 붙여넣기는 이미지 경로가 든 여러 줄에서 "[Pasted text …]"로 접힌 채 제출되지 않는다(2026-09-30 실기) — 채널이 정본, 붙여넣기는 되돌아갈 곳.
 # 실패 시: exit 0 + stdout으로 "[스레드 라우팅 실패]" 안내를 붙여 메인이 이번만 대신 답하게 한다.
 # 스레드 세션(DISCORD_THREAD_ID)·로컬 세션에서는 즉시 exit 0.
-# stdin: {session_id, prompt, cwd, ...}. 테스트 override: BOT_THREAD_BIN, BOT_THREAD_CURL.
+# stdin: {session_id, prompt, cwd, ...}. 테스트 override: BOT_THREAD_BIN, BOT_THREAD_CURL, BOT_THREAD_AGENTLAYER.
 set -uo pipefail
 
 [[ -z "${DISCORD_THREAD_ID:-}" ]] || exit 0
 INPUT=$(cat)
 BOT_THREAD="${BOT_THREAD_BIN:-$HOME/.local/bin/bot-thread}"
+AGENTLAYER="${BOT_THREAD_AGENTLAYER:-agentlayer}"
 
 # prompt·cwd·chat_id·message_id 추출 (python으로 — 태그 속성 순서에 의존하지 않는다)
 read -r CHAT_ID MSG_ID CWD < <(python3 - "$INPUT" <<'EOF'
@@ -33,18 +36,18 @@ EOF
 )
 [[ -n "$CHAT_ID" ]] || exit 0
 
-# 봇 이름·폴더: cwd가 bots.json의 folder와 일치하는 항목
-read -r BOT FOLDER < <(python3 - "${BOT_THREAD_BOTS_JSON:-$HOME/.config/folder-bot/bots.json}" "$CWD" <<'EOF'
+# 봇 이름·폴더·tmux 세션: cwd가 bots.json의 folder와 일치하는 항목
+read -r BOT FOLDER SESSION < <(python3 - "${BOT_THREAD_BOTS_JSON:-$HOME/.config/folder-bot/bots.json}" "$CWD" <<'EOF'
 import json, sys, os
 try:
     bots = json.load(open(sys.argv[1]))
 except (OSError, ValueError):
-    print("", ""); sys.exit(0)
+    print("", "", ""); sys.exit(0)
 cwd = os.path.realpath(sys.argv[2]) if sys.argv[2] else ""
 for name, b in bots.items():
     if b.get("engine", "claude") == "claude" and os.path.realpath(b["folder"]) == cwd:
-        print(name, b["folder"]); sys.exit(0)
-print("", "")
+        print(name, b["folder"], b.get("session") or ""); sys.exit(0)
+print("", "", "")
 EOF
 )
 [[ -n "$BOT" ]] || exit 0
@@ -88,7 +91,23 @@ if [[ -n "$MSG_ID" ]] && grep -q 'attachment_count=' <<<"$BODY"; then
 첨부 파일(다운로드됨):
 $ATT"
 fi
-printf '%s' "$BODY" | "$BOT_THREAD" deliver "$BOT" "$CHAT_ID" - 2>>"$STATE/thread-route.log" || fail "스레드 세션 전달 실패(deliver)"
+# 전달: agentlayer send가 정본 — 스레드 세션의 채널 수신함(총괄 모드 서버도 pane 수신함을 쥔다, agentlayer 1.11.2+)으로
+# 넣으면 붙여넣기 없이 사용자 입력과 똑같이 들어간다. 대상은 "<세션>:<스레드 창>"(창 이름 t+6자리). send가 거부·실패하면
+# (agentlayer 없음, 세션 기록 아직 없음, 승인 대기 등) 예전 붙여넣기 경로로 되돌아간다 — 두 경로로 두 번 보내지 않는다.
+send_via_agentlayer() {
+  [[ -n "$SESSION" ]] || return 1
+  command -v "$AGENTLAYER" >/dev/null 2>&1 || return 1
+  local target="$SESSION:t${CHAT_ID: -6}" out via
+  out=$(printf '%s' "$BODY" | "$AGENTLAYER" send --json "$target" - 2>>"$STATE/thread-route.log") || return 1
+  via=$(python3 -c 'import json,sys
+try: print(json.loads(sys.argv[1]).get("via") or "")
+except ValueError: print("")' "$out")
+  [[ -n "$via" ]] || return 1
+  echo "[$(date '+%F %T')] 스레드 $CHAT_ID → agentlayer send $target via=$via" >>"$STATE/thread-route.log"
+}
+if ! send_via_agentlayer; then
+  printf '%s' "$BODY" | "$BOT_THREAD" deliver "$BOT" "$CHAT_ID" - 2>>"$STATE/thread-route.log" || fail "스레드 세션 전달 실패(deliver)"
+fi
 if [[ -n "$FIRST" ]]; then
   SHORT="${CHAT_ID: -6}"
   "$BOT_THREAD" post "$BOT" "$CHAT_ID" "이 스레드는 전용 세션 \`$AGENT\`이 담당합니다 (터미널: tmux 창 \`t$SHORT\`)." >/dev/null 2>&1 || true
